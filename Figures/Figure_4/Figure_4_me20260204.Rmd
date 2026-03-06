@@ -1,0 +1,482 @@
+---
+title: "Figure_4_CTCF genomewide analysis"
+author: "Mathias"
+date: "2025-11-14"
+output: 
+  html_document:
+    theme: journal
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+editor_options:
+  chunk_output_type: console
+---
+#Aim
+In our reporer hopping experiments we saw that CBS-Sox2P aligned in the same orientation have a favored functional outcome. Therefore we wanted to check if there is a bias genome wide. 
+
+#Method
+I loaded all the annotated transcripts from UCSC and loaded the CTCF binding motifs that occur in the mm10 genome based on the most popular PWMs (961635) called sites with a pvalue <1e4. FIMO calls CTCF motifs with a default p-value threshold of 1×10⁻⁴, which is relatively permissive. Based on benchmarking against ENCODE SCREEN, a threshold of 1×10⁻⁶ gives ~80% true positive rate, so we restricted our analysis to motifs with p < 1×10⁻⁶.
+
+Note that the FIMO tool detects CTCF binding sites using the 1e-4 p-value threshold by default (the more significant p-value corresponds to the more confidently detected CTCF motif). We found that this threshold may be too permissive. Using the ENCODE SCREEN database as ground truth, we found 1e-6 as the optimal threshold providing approximately 80% true positive rate. However, less significant CTCF motifs may be cell type-specific or have weaker CTCF binding and therefore be missed by conventional peak callers. If cell type-specific CTCF binding is of interest, we recommend exploring less significant CTCF sites. 
+
+Then I looked for CBS that are either in the same, opposite or mixed orientation as the TSS, upstream or downstream of the TSS in a set window. 
+I did this for different window sized and also calculated a metaplot representing the density of all CTCF sites in regards of distance of 10kb to the TSS. 
+
+# Install packages
+```{r}
+# BiocManager::install("AnnotationHub", update = FALSE)
+# BiocManager::install("plyranges", update = FALSE)
+
+library(GenomicRanges)
+library(AnnotationHub)
+library(plyranges)
+library(knitr)
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggbeeswarm)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(purrr)
+library(ggpubr)
+library(cowplot)
+library(biomaRt)
+library(org.Mm.eg.db)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(gUtils)      # for gr.flipstrand
+library(tibble)
+
+```
+
+# Paths & parameters
+```{r paths_parameters}
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("analysis",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+## Annotations
+```{r}
+Sox2_gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34649995,
+                                     end = 34652461),
+                    strand = "+")
+
+## 1) Get Entrez ID for Nanog
+nanog_entrez <- AnnotationDbi::select(
+  org.Mm.eg.db,
+  keys    = "Nanog",
+  keytype = "SYMBOL",
+  columns = "ENTREZID"
+)$ENTREZID
+
+## 2) Get all genes from TxDb and subset to Nanog
+genes_txdb <- genes(TxDb.Mmusculus.UCSC.mm10.knownGene)
+
+Nanog_gene <- genes_txdb[mcols(genes_txdb)$gene_id == nanog_entrez]
+Nanog_gene
+```
+
+# Load data
+So every transcript gets a TSS. That means:
+Genes with many isoforms get many TSSs, and so more weight in all counts and metaplots.
+The analysis is per transcript.
+```{r load data}
+# TSSs (TxDb knownGene)
+TSSs_all_transcripts <- resize(transcripts(TxDb.Mmusculus.UCSC.mm10.knownGene), width = 1, fix = "start")
+TSSs_regular_chr <- keepStandardChromosomes(TSSs_all_transcripts, pruning.mode = "coarse")
+```
+
+```{r CTCF annotation}
+ah <- AnnotationHub()
+#> snapshotDate(): 2022-10-31
+query_data <- subset(ah, preparerclass == "CTCF")
+# Explore the AnnotationHub object
+query_data
+
+
+subset(query_data, species == "Homo sapiens" & 
+                   genome == "hg38" & 
+                   dataprovider == "JASPAR 2022")
+
+subset(query_data, species == "Mus musculus" & 
+         genome == "mm10" & 
+         dataprovider == "JASPAR 2022")
+
+
+# mm10 JASPAR2022_CORE_vertebrates_non_redundant_v2
+CTCF_mm10_all <- query_data[["AH104753"]]
+
+# mm10 using the most popular CTCF PWM
+CTCF_mm10 <- query_data[["AH104755"]]
+
+# Sanity: strands present?
+table(strand(CTCF_mm10))
+table(strand(TSSs_regular_chr))[c("+","-")]
+```
+
+# Sort GRanges object and keep standard chromosomes
+```{r sort GRanges}
+CTCF_mm10_all <- CTCF_mm10_all %>% keepStandardChromosomes() %>% sort()
+CTCF_mm10 <- CTCF_mm10 %>% keepStandardChromosomes() %>% sort()
+```
+
+# Save the data as bed file to manually check
+```{r}
+# Note that rtracklayer::import and rtracklayer::export perform unexplained
+# start coordinate conversion, likely related to 0- and 1-based coordinate
+# system. We recommend converting GRanges to a data frame and save tab-separated
+
+# setwd("/DATA/usr/m.eder/projects/Tests/Genome_wide_CTCF_TSS_bias/")
+# 
+# write.table(CTCF_mm10_all %>% sort() %>% as.data.frame(), 
+#             file = "CTCF_mm10_all.bed",
+#             sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+# 
+# write.table(CTCF_mm10 %>% sort() %>% as.data.frame(), 
+#             file = "CTCF_mm10.bed",
+#             sep = "\t", row.names = FALSE, col.names = FALSE, quote = FALSE)
+```
+
+<!-- #Note that the FIMO tool detects CTCF binding sites using the 1e-4 p-value threshold by default (the more significant p-value corresponds to the more confidently detected CTCF motif). We found that this threshold may be too permissive. Using the ENCODE SCREEN database as ground truth, we found 1e-6 as the optimal threshold providing approximately 80% true positive rate. However, less significant CTCF motifs may be cell type-specific or have weaker CTCF binding and therefore be missed by conventional peak callers. If cell type-specific CTCF binding is of interest, we recommend exploring less significant CTCF sites. 
+-->
+
+# Filter CTCF sites more stringently based on motif cutoff
+```{r filter CBS by 1e6 cuttoff}
+# Check length before filtering
+print(paste("Number of CTCF motifs at the default 1e-4 threshold:", length(CTCF_mm10)))
+
+#> [1] "Number of CTCF motifs at the default 1e-4 threshold: 961635"
+# Filter and check length after filtering
+CTCF_mm10_filtered <- CTCF_mm10 %>% plyranges::filter(pvalue < 1e-6)
+print(paste("Number of CTCF motifs at the 1e-6 threshold:", length(CTCF_mm10_filtered)))
+#> [1] "Number of CTCF motifs at the 1e-6 threshold: 32188"
+# Similarly, filter
+CTCF_mm10_all_filtered <- CTCF_mm10_all %>% plyranges::filter(pvalue < 1e-6)
+print(paste("Number of CTCF motifs at the 1e-6 threshold:", length(CTCF_mm10_all_filtered)))
+
+```
+
+```{r}
+# Proportion of overlapping enrtries
+tmp <- findOverlaps(CTCF_mm10_all, CTCF_mm10_all)
+ov_counts <- table(queryHits(tmp))
+frac_with_neighbor <- mean(ov_counts > 1)
+frac_with_neighbor
+#> [1]  0.4137338
+
+tmp <- findOverlaps(CTCF_mm10, CTCF_mm10)
+ov_counts <- table(queryHits(tmp))
+frac_with_neighbor <- mean(ov_counts > 1)
+frac_with_neighbor
+#> [1] 0.02605042
+```
+
+# Unanimity-aware per-TSS classification
+upstream/downstream relative to transcription direction
+```{r TSS classification}
+# the classifier makes a decision based on TSS, if there are 2 in same and 3 in opposite it will get into the mixed bag
+
+classify_ctcf_by_orientation <- function(TSSs, CTCF, window_size = 2500) {
+  upstream_region   <- promoters(TSSs, upstream = window_size, downstream = 0)
+  downstream_region <- promoters(TSSs, upstream = 0, downstream = window_size)
+
+  classify_region <- function(region_gr, region_label) {
+    # Count same- and opposite-orientation overlaps separately
+    hits_same <- findOverlaps(CTCF, region_gr,                  ignore.strand = FALSE)
+    hits_opp  <- findOverlaps(CTCF, gr.flipstrand(region_gr),   ignore.strand = FALSE)
+
+    df_same <- tibble(tss_ix = subjectHits(hits_same)) %>% count(tss_ix, name = "n_same")
+    df_opp  <- tibble(tss_ix = subjectHits(hits_opp))  %>% count(tss_ix, name = "n_opp")
+
+    df <- full_join(df_same, df_opp, by = "tss_ix") %>%
+      mutate(
+        n_same = replace_na(n_same, 0L),
+        n_opp  = replace_na(n_opp,  0L),
+        region = region_label,
+        class  = case_when(
+          n_same > 0 & n_opp == 0 ~ "all_same",
+          n_opp  > 0 & n_same == 0 ~ "all_opposite",
+          n_same > 0 & n_opp  > 0 ~ "mixed",
+          TRUE                    ~ "none"
+        )
+      )
+
+    # Ensure every TSS is represented
+    tibble(tss_ix = seq_along(region_gr)) %>%
+      left_join(df, by = "tss_ix") %>%
+      mutate(
+        region = region_label,
+        n_same = replace_na(n_same, 0L),
+        n_opp  = replace_na(n_opp,  0L),
+        class  = replace_na(class,  "none")
+      )
+  }
+
+  bind_rows(
+    classify_region(upstream_region,   "upstream"),
+    classify_region(downstream_region, "downstream")
+  )
+}
+
+# Run once at 2.5 kb
+res_class <- classify_ctcf_by_orientation(TSSs_regular_chr, CTCF_mm10_all, window_size = 2500)
+res_summary <- res_class %>% count(region, class, name = "n_TSS") %>% arrange(region, class)
+res_summary
+
+```
+
+# Implement in anlysis
+## Window-size sweep + stacked fractions
+```{r Figure S4A fractions upstream downstream}
+window_grid <- c(seq(100, 900, 100), seq(1000, 5000, 500), seq(7500, 10000, 2500))
+
+res_all <- map_df(window_grid, function(w) {
+  tmp <- classify_ctcf_by_orientation(TSSs_regular_chr, CTCF_mm10_filtered, window_size = w)
+  total_tss <- length(TSSs_regular_chr)
+  tmp %>% count(region, class, name = "n_TSS") %>%
+    mutate(windowsize = w, frac = n_TSS / total_tss)
+})
+
+res_all <- res_all %>%
+  mutate(
+    region = factor(region, levels = c("upstream","downstream")),
+    class  = factor(class,  levels = c("all_same","mixed","all_opposite","none"))
+  )
+
+# Figure S4A
+p_frac <- ggplot(res_all, aes(x = factor(windowsize), y = frac, fill = class)) +
+  geom_col(position = "fill") +
+  facet_wrap(~ region, ncol = 1) +
+  labs(x = "Window size (bp)", y = "Fraction of TSS (sum=1 per window/side)", fill = "Class") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+p_frac
+#ggsave(file.path(output_dir, "ctcf_unanimity_fractions_by_window.pdf"), p_frac, width = 12, height = 6)
+```
+
+## Figure 4B
+```{r Figure 4B fractions upstream downstream}
+# Figure 4B
+res_all %>% filter(class != "none") %>%
+ ggplot(aes(x = factor(windowsize), y = frac, fill = class)) +
+  geom_col(position = "fill") +
+  facet_wrap(~ region, ncol = 1) +
+  geom_hline(yintercept = 0.5, col = "black", linetype = "dotted") +
+  labs(x = "Window size (bp)", y = "Fraction of TSS (sum=1 per window/side)", fill = "Class") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+```
+
+## Figure S4B
+```{r Figure S4B fractions upstream downstream}
+#Different way of plotting
+res_counts <- res_all %>%
+  mutate(
+    region = factor(region, levels = c("upstream","downstream")),
+    class  = factor(class,  levels = c("all_same","mixed","all_opposite","none"))
+  )
+
+# Figure S4B
+# label a subset of x ticks for readability (every 1000 bp + the max)
+label_df <- res_counts %>%
+  filter(windowsize %% 500 == 0 | windowsize == max(windowsize)) #filtering for everything that is 1000/x = 0 (multiple of 1000s)
+
+res_counts %>% 
+ggplot(aes(x = windowsize, y = n_TSS, color = class)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df,
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "CTCF orientation class") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+```
+
+## Figure 4C
+```{r Figure 4C}
+
+res_counts %>% filter(class != "none") %>%
+ggplot(aes(x = windowsize, y = n_TSS, color = class)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df %>% filter(class != "none"),
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "Region") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+
+
+res_counts %>% filter(class != "none" & windowsize <= 2500) %>%
+ggplot(aes(x = windowsize, y = n_TSS, color = class)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df %>% filter(class != "none" & windowsize <= 2500),
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "Region") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+
+
+res_counts %>% filter(class != "none" & windowsize <= 2500) %>%
+ggplot(aes(x = windowsize, y = n_TSS, color = class, linetype = region)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df %>% filter(class != "none" & windowsize <= 2500),
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  #facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "CTCF orientation class") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+```
+
+
+
+## Figure 4D -  Metaplots (expressed TSSs ↔ CTCF distances)
+```{r metaplot expressed TSS - CTCF distance TSS perspective}
+
+######### orientation specific ###########
+# TSS-centered (±15 kb) with proper same/opposite classes
+meta_window <- 15000
+TSS_meta_regions <- resize(TSSs_regular_chr, width = 2*meta_window + 1, fix = "center")
+
+# make the TSS windows unstranded for overlap purposes
+TSS_meta_unstr <- TSS_meta_regions
+strand(TSS_meta_unstr) <- "*"
+
+midpoint <- function(gr) (start(gr) + end(gr)) %/% 2L
+
+# include all CTCFs near TSS windows regardless of strand
+CTCF_near_TSS <- subsetByOverlaps(CTCF_mm10_filtered, TSS_meta_unstr, ignore.strand = TRUE)
+
+# find overlaps without strand constraint
+ov1 <- findOverlaps(CTCF_near_TSS, TSS_meta_unstr, ignore.strand = TRUE)
+
+rel_pos_df_TSS <- tibble(
+  ctcf_ix     = queryHits(ov1),
+  tss_ix      = subjectHits(ov1),
+  ctcf_pos    = midpoint(CTCF_near_TSS)[ctcf_ix],
+  tss_pos     = start(TSSs_regular_chr)[tss_ix],
+  ctcf_strand = as.character(strand(CTCF_near_TSS))[ctcf_ix],
+  tss_strand  = as.character(strand(TSSs_regular_chr))[tss_ix]
+) %>%
+  # (optional) drop unknown CTCF strands
+  filter(ctcf_strand %in% c("+","-")) %>%
+  mutate(
+    # distance from TSS perspective: <0 upstream, >0 downstream
+    rel_pos = if_else(tss_strand == "+", ctcf_pos - tss_pos, tss_pos - ctcf_pos),
+    orientation_match = if_else(ctcf_strand == tss_strand, "same", "opposite")
+  )
+
+```
+## Get density stats
+```{r Figure 4D metaplot}
+
+rel_pos_df_TSS %>% 
+  dplyr::group_by(orientation_match) %>% 
+  dplyr::summarise(count = dplyr::n(),
+                   mean = mean(rel_pos),
+                   median = median(rel_pos))
+
+dens_df <- rel_pos_df_TSS %>% 
+  group_by(orientation_match) %>%
+  do({
+    d <- density(.$rel_pos, bw = 250, na.rm = TRUE)
+    tibble(rel_pos = d$x, density = d$y)
+  }) %>%
+  ungroup()
+
+modes <- dens_df %>%
+  group_by(orientation_match) %>%
+  slice_max(order_by = density, n = 1, with_ties = FALSE) %>%
+  rename(mode_rel_pos = rel_pos, max_density = density)
+
+modes
+
+modes %>% 
+  mutate(mode_rel_pos_kb = mode_rel_pos / 1000) %>%
+  kable()
+
+## with number of density written
+ggplot(rel_pos_df_TSS, aes(x = rel_pos, color = orientation_match)) +
+  geom_density(bw = 250) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_vline(
+    data = modes,
+    aes(xintercept = mode_rel_pos, color = orientation_match),
+    linetype = "dotted"
+  ) +
+  geom_vline(xintercept = -2000, linetype = "dashed", col = "orange") +
+  geom_text(
+    data = modes,
+    aes(x = mode_rel_pos, y = 0, 
+        label = round(mode_rel_pos)),    # label in bp
+    angle = 90, vjust = -0.5, hjust = -5,
+    show.legend = FALSE
+  ) +
+  coord_cartesian(ylim = c(2e-5, NA), xlim = c(-1e4, 1e4)) +  # <-- crop off the flat bottom
+  labs(
+    x = "Distance from TSS (bp)",
+    y = "Density of CTCF sites",
+    color = "Orientation"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "bottom")
+```
+
+

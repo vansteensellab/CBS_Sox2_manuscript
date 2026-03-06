@@ -1,0 +1,258 @@
+---
+title: "Figure_2_me20250804_E2259_sorter_FACS_gated"
+author: "Mathias Eder"
+date: "2026-03-04"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+#Aim:
+The aim is to plot the data from the sorting with the gates that have been used for sorting. 
+
+#Compatibility problems
+The newer ggplot version is not compatible with the plotting in the ggcyto package, therefore i loaded an older version of ggplot in order to be compatible with the functions of ggcyto.
+```{r}
+# Load older ggplot version that is compatible with the GENOVA package
+.libPaths(c("/DATA/usr/m.eder/R/ggplot2_3x", .libPaths()))
+
+library(ggplot2)
+packageVersion("ggplot2")  # should now show 3.5.1
+```
+
+# setup
+## libraries
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+library(dtplyr)
+library(tidyr)
+library(ggbeeswarm)
+#library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+library(plotly)
+library(readxl)
+library(ggpubr)
+library(ggpmisc)
+library(ggridges)
+library(dplyr)
+library(import)
+library(ggh4x)
+# import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+library(flowWorkspace)
+#to install this you need to manually install RFOC first:
+#install_url('https://cran.r-project.org/src/contrib/Archive/RFOC/RFOC_3.4-6.tar.gz')
+library(caTools)
+library(ggrastr)
+library(cowplot)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+## Paths & parameters
+```{r paths_parameters}
+setwd("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_2")
+
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_2/analysis_FACS_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+#load FACSDiva file
+```{r}
+library(openCyto) 
+library(CytoML)
+library(flowWorkspace)
+
+diva_xml_file = "/DATA/projects/CTCF_Sox2/FACS_files/FACS_experiments/E2259_CBS_Sox2P_rep1/Mathias (BvS) 20230502_E2259_CTCF_mTurq.xml"
+
+diva_ws <- open_diva_xml(diva_xml_file)
+  
+
+gs <- diva_to_gatingset(diva_ws,
+                        name = 1, #the group to import
+                        path = "/DATA/projects/CTCF_Sox2/FACS_files/FACS_experiments/E2259_CBS_Sox2P_rep1/raw_fcs_3.0",
+                        swap_cols = T, #apparently we don't need to swap the FSC/SSC-H/W here (this is a known diva 'bug', if you import the xml into flowjo the columns are swapped but apparently not here) 
+                        worksheet = "global",
+                        verbose = F,
+                        execute = T)
+
+pdata_tib = pData(gs) %>%
+  as_tibble() %>%
+  mutate(name_short = str_remove(str_remove(name, "Mathias (BvS) 20230502_E2259_"), "_([0-9]){3}.fcs"),
+         cell_line = case_when(grepl("34A", name_short) ~ "Sox2P",
+                               grepl("MK01", name_short) ~ "CBS_3x_Fw",
+                               grepl("MK02", name_short) ~ "CBS_3x_Rv",
+                               grepl("MK03", name_short) ~ "CBS_1x_Fw",
+                               grepl("neg_ctrl", name_short) ~ "WT",
+                               .default = "Sox2P"),
+         treatment = case_when(grepl("PB", name_short) ~ "PB",
+                               grepl("SB", name_short) ~ "SB",
+                               .default = "untreated"),
+
+         # treatment_tmp = case_when(grepl("PB", name_short) ~ "PB",
+         #                       grepl("SB", name_short) ~ "SB",
+         #                       .default = "untreated"),
+         # treatment = case_when(cell_line == "Sox2P" & treatment_tmp == "PB" ~ "untreated",
+         #                       .default = treatment_tmp),
+         
+         sample_type = case_when(cell_line %in% c("WT") | treatment == "untreated" ~ "control",
+                                 cell_line == "Sox2P" & treatment == "PB" ~ "control",
+                                 .default = "sample"),
+         replicate = "rep1",
+         recording = case_when(grepl("_sort", name_short) ~ "sorting",
+                               .default = "pre-recording")
+         )
+  # select(-c(treatment_tmp))
+
+pdata_df = as.data.frame(pdata_tib)
+rownames(pdata_df) = pdata_df$name
+
+pData(gs) = pdata_df
+```
+
+```{r}
+autoplot(gs[[2]])
+```
+
+```{r, plot_prerecorded_only, height = 14, width = 7}
+gs_oi = subset(gs, cell_line != "WT" & treatment != "untreated" & recording == "pre-recording") 
+#plot the data from the recording, not the sorting, so we have a similar number of cells for PB and SB (SB we recorded many more during the sorting)
+
+#Plotting hirachy
+plot(gs_oi[[1]])
+
+ggcyto::ggcyto(gs_oi, aes(x = "GFP", y = "mTurqoise2"), subset = "GFP+ mCh+") +
+  #facet by cell line / treatment
+  facet_grid(cell_line ~ treatment) +
+  
+  #plot cells
+  geom_hex(bins = 126, aes( fill = after_stat(ncount))) +
+  scale_fill_distiller(palette = 'Spectral') + #manually adding a fill scale also forces the scale to be linear again.
+  
+  #plot_gates
+  ggcyto::geom_gate(paste0("gate", 1:6, " mCh+"), col = 'black') +
+  ggcyto::geom_stats(parent = "GFP+ mCh+", adjust = c(-0.3, 0.5), digits = 3, size = 3) +
+    
+  #layout
+  theme_bw(base_size = 14) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        aspect.ratio = 1) +
+  ggtitle(element_blank())+
+  ggcyto::axis_x_inverse_trans() +
+  ggcyto::axis_y_inverse_trans() +
+  # scale_x_continuous(expand = expansion(mult = c(0, 0.2)))+
+  scale_y_continuous(expand = expansion(mult = 0.1)) +
+  ggcyto::labs_cyto(labels = "marker")
+
+```
+
+```{r,plot_all_data, height = 21, width = 7}
+gs_oi_all = subset(gs, cell_line != "WT") 
+#plot the data from the recording, not the sorting, so we have a similar number of cells for PB and SB (SB we recorded many more during the sorting)
+
+ggcyto::ggcyto(gs_oi_all, aes(x = "GFP", y = "mTurqoise2"), subset = "GFP+ mCh+") +
+  #facet by cell line / treatment
+  facet_nested(treatment+recording ~ cell_line) +
+  
+  #plot cells
+  geom_hex(bins = 126, aes( fill = after_stat(ncount))) +
+  scale_fill_distiller(palette = 'Spectral') + #manually adding a fill scale also forces the scale to be linear again.
+  
+  #plot_gates
+  ggcyto::geom_gate(paste0("gate", 1:6, " ", "mCh+"), col = 'black') +
+  ggcyto::geom_stats(adjust = c(-0.3, 0.5), digits = 3, size = 3) +
+    
+  #layout
+  theme_bw(base_size = 14) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        aspect.ratio = 1) +
+  ggtitle(element_blank())+
+  ggcyto::axis_x_inverse_trans() +
+  ggcyto::axis_y_inverse_trans() +
+  # scale_x_continuous(expand = expansion(mult = c(0, 0.2)))+
+  scale_y_continuous(expand = expansion(mult = 0.1)) +
+  ggcyto::labs_cyto(labels = "marker")
+
+```
+
+## Check for cells
+```{r}
+ggcyto::ggcyto(gs, aes(x = "FSC-A", y = "FSC-H"), subset = "P1") +
+  ggcyto::axis_x_inverse_trans() +
+  ggcyto::axis_y_inverse_trans() +
+  geom_hex(bins = 126, aes( fill = after_stat(ncount))) +
+  ggcyto::geom_gate("P3", col = 'black') +
+  theme_classic()
+
+```
+
+## GFP+ mCh+ cells
+```{r width = 24, height = 5}
+
+gs_oi_mChpos = subset(gs, sample_type == "sample" & recording == "sorting" | treatment == "PB") #sorting only, combining 2 data sets doesn't give the right percentages on the gates
+
+#gs_oi_mChpos = subset(gs, sample_type == "sample" & recording == "pre-recording" | treatment == "PB") 
+
+plot_FACS_E2259 = ggcyto::ggcyto(gs_oi_mChpos, aes(x = "GFP", y = "mTurqoise2"), subset = "GFP+ mCh+") +
+  #facet by cell line / treatment
+  facet_grid(treatment ~  factor(cell_line, levels = c("Sox2P", "CBS_1x_Fw", "CBS_3x_Fw", "CBS_3x_Rv"))) +
+
+  #plot cells
+  geom_hex(bins = 128, aes( fill = after_stat(ncount))) +
+  scale_fill_distiller(palette = 'Spectral') + #manually adding a fill scale also forces the scale to be linear again.
+
+  #plot_gates
+  ggcyto::geom_gate(paste0("gate", 1:6, " ", "mCh+"), col = 'black') +
+  ggcyto::geom_stats(adjust = c(-0.3, 0.5), digits = 2, size = 5) +
+
+  #layout
+  theme_bw(base_size = 14) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),
+        legend.position = "none",
+        aspect.ratio = 1) +
+  ggtitle(element_blank())+
+  ggcyto::axis_x_inverse_trans() +
+  ggcyto::axis_y_inverse_trans() +
+  ggcyto::ggcyto_par_set(limits = list(x = c(1.2, 4), y = c(0, 4.2))) +
+  scale_y_continuous(expand = c(0,0)) +
+  scale_x_continuous(expand = c(0,0))+
+  ggcyto::labs_cyto(labels = "marker")
+
+plot_FACS_E2259
+```

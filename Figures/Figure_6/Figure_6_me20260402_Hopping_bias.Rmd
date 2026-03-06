@@ -1,0 +1,1716 @@
+---
+title: "me20260303_CBS_hopping_bias"
+author: "Mathias Eder"
+date: "2026-03-03"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# Aim
+Analyse the CBS induced hopping bias of CBS-Sox2P and CBS only hopping.
+
+#Figures
+- fig 6B
+- fig 6C
+- fig 6D
+- fig S6G
+- fig 6E
+- fig S5F
+
+# Set-up
+##Libraries
+Load the libraries and set the parameters.
+
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+#library(broom)
+library(Biostrings)
+library(stringr)
+library(readr)
+#library(tagMeppr)
+#library(withr)
+library(knitr)
+library(RColorBrewer)
+#library(tagmapAnalyseR)
+# library(UpSetR)
+# library(ComplexHeatmap)
+library(purrr)
+# library(ggpubr)
+# library(cowplot)
+library(RcppRoll)
+library(viridis)
+library(plotly)
+library(GGally)
+library(cowplot)
+library(ggh4x)
+library(Cairo)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+# Paths & parameters
+```{r paths_parameters}
+setwd("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_6")
+
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_6/",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(cache = T,
+               message = F, 
+               warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 600,
+               fig.path = file.path(output_dir, "figures/"),
+               cache.lazy = F) 
+pdf.options(useDingbats = FALSE)
+```
+
+# File paths
+## Load CBS-Sox2P data
+```{r}
+path_CTCF_sites = "/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed"
+
+# Path for integrations
+path_CTCF_ints = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_CBS.tsv"
+path_tib_23_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_-116kb_Sox2P_pools.txt"
+path_tib_CTCF_Sox2P = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_CBS_Sox2P.tsv"
+
+# this RDS comes from the following markdown 'me20260302_figure_2_S1_S3"
+tib_filtered_curated_strict = readRDS("/DATA/projects/CTCF_Sox2/Scripts/CTCF_Sox2P/tib_filtered_curated_strict.rds")
+
+tib_filtered_curated_strict = tib_filtered_curated_strict %>%
+  mutate(cell_line = factor(cell_line, levels = c("23_34A", "23_MK03_C1", "23_MK01_C5", "23_MK02_C2", "8_34", "8_MK03_C3", "8_MK01_C1", "8_MK01_C2", "8_MK02_C5")))
+```
+
+## Load CTCF only data
+# Load and filter CTCF hopping data
+```{r load CTCF data}
+
+# load CTCF data
+tib_CTCF = read_tsv(path_CTCF_ints) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) %>%
+  group_by(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, sample, cell_line, CBS_motif_orientation) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") %>%
+  #mark hopped integrations
+  mutate(hopped = start != 34643961)
+
+#filter the integrations
+tib_filtered_CTCF <- tib_CTCF %>%
+  #add variables used in the plotting (old names of cell lines etc) 
+  mutate(population = case_when(sample_type == "control pool" ~ "ctrl",
+                                .default = sorted_gate),
+         #annotate confidence of mapping (one or both ITRs)
+         mapped_arms = case_when(read_count_1 == 0 ~ "rv_only",
+                                 read_count_2 == 0 ~ "fw_only",
+                                 read_count_1 > 0 & read_count_2 > 0 ~ "both_arms"),
+         landing_pad = case_when(launch_pad_location == "-116 kb" ~ "23"),
+         motif = case_when(CBS_motif_orientation == "FW" ~ "forward",
+                           CBS_motif_orientation == "RV" ~ "reverse",
+                           CBS_motif_orientation == "-" & strand == "+" ~ "forward",
+                           CBS_motif_orientation == "-" & strand == "-" ~ "reverse",
+                           .default = CBS_motif_orientation)) %>%
+  #filter the data
+  filter(population == "ctrl" | read_count >= 2) %>% #for ctrl distribution 1 mapping read is enough
+  filter(!(start >= 34721183 & start <= 34721192)) %>% #remove contamination from LP8
+  filter(strand %in% c("+", "-")) %>% #remove non annotated strand
+  filter(!(population == "mCh_low" & mapped_arms != "both_arms")) %>% #only keep mCh_low integrations with 2 mapped arms
+  filter(!(experiment == "E1665" & population == "mCh_mid" & mapped_arms != "both_arms")) %>% #mCh_close is the population of interest in E1665, mid is a bit lower and needs to be filtered for not having deletions
+  mutate(population = case_when(experiment == "E1665" & population == "mCh_close" ~ "mCh_mid",
+                                .default = population))
+
+# quick check
+table(tib_filtered_CTCF$cell_line, tib_filtered_CTCF$population)
+table(tib_filtered_CTCF$population, tib_filtered_CTCF$chr)
+
+# Combine the 1xCBS cell lines (CBS16A + 16A)
+tib_CBS16_16A_comb = tib_filtered_CTCF %>% filter(population %in% c("ctrl", "mCh_mid", "mCh_high")) %>% 
+  mutate(cell_line = case_when(cell_line == "CBS16" ~ "CBS16_16A",
+                               cell_line == "16A" ~ "CBS16_16A",
+                               .default = cell_line))
+
+tib_CBS16_16A_comb = tib_CBS16_16A_comb %>%
+  mutate(cell_line = factor(cell_line, levels = c("37A", "CRE6", "CBS16_16A", "3xCTCF")),
+         landing_pad = case_when(landing_pad == "23" ~ "LP23",
+                                 .default = landing_pad)) %>%
+  ungroup() %>%
+  select(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, read_count, read_count_1, read_count_2, hopped, cell_line, population, landing_pad, mapped_arms)
+
+all_exp = unique(tib_filtered_CTCF$experiment)
+```
+
+
+# Relevant annotations
+## Genomic coordinates of features
+```{r element_coordinates}
+# Location of enhancer / gene
+enhancer <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34753415,
+                                     end = 34766401),
+                    strand = "*")
+
+
+#gene based on mm10, ucsc browser, RefSeq annotation
+# Sox2
+# chr3:34649995-34652461 (+)
+# id = NM_011443.4
+
+Sox2_gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34649995,
+                                     end = 34652461),
+                    strand = "+")
+
+
+landingPad_23 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34643960,
+                                     end = 34643962),
+                    strand = "+")
+
+landingPad_8 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34721183,
+                                     end = 34721184),
+                    strand = "+")
+
+
+LP_tib = tibble(landing_pad = c("LP23", "LP8"), 
+                start = c( start(landingPad_23),start(landingPad_8)))
+
+#CTCF sites based on our own mapping
+# new analysis (based on mapping to mm10 only)
+CTCF_mm10_new <- import.bed('/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed')
+
+#filtering:
+CTCF_mm10.chr3 <- CTCF_mm10_new[seqnames(CTCF_mm10_new)== 'chr3']
+# add the missing site after the SCR
+CTCF_mm10.chr3_extra = sort(c(CTCF_mm10.chr3,
+                         GRanges(seqnames = "chr3",
+                                 IRanges(start = 34772210, end = 34772210),
+                                 strand = "+")),
+                         ignore.strand = T)
+
+# add the missing site at 35.5
+CTCF_mm10.chr3_extra = sort(c(CTCF_mm10.chr3_extra,
+                         GRanges(seqnames = "chr3",
+                                 IRanges(start = 35574646, end = 35574664),
+                                 strand = "-")),
+                         ignore.strand = T)
+
+```
+
+## Plotting ranges
+```{r Plotting ranges}
+prange_zoom = c(34500000 , 35000000)
+prange2 = c(34000000, 35500000)
+prange_far = c(32000000, 37000000)
+#zoom in on only the SCR +- 50kb
+prange_LP = c(start(landingPad_23)-5E4, end(landingPad_23)+5E4)
+prange_SCR = c(start(enhancer)-5E4, end(enhancer)+5E4)
+prange_plot = c(32643960, 36643960) #+/- 2MB from landing pad
+prange_loop = c(34631804, 34778268)
+prange_zoom = c(34.5E6, 35E6)
+prange_zoom_paper = c(34.59E6, 34.83E6)
+prange_SCR = c(34.725E6, 34.785E6)
+range_2Mb = c(33.643960E6, 35.643960E6)
+```
+
+## Color schemes
+```{r Color schemes}
+myCols_insert_cell_line <- c(
+  `23_MK01_C5` = '#1b9e77',   # Teal green
+  `23_MK02_C2` = '#d95f02',   # Strong orange
+  `23_MK03_C1` = '#7570b3',   # Purple
+  `23_34A` = 'black', # blue for ctrl cell line
+  `8_MK01_C1` = '#1b9e77',   # Teal green
+  `8_MK01_C2` = '#1b9e77',   # Teal green
+  `8_MK02_C5` = '#d95f02',   # Strong orange
+  `8_MK03_C3` = '#7570b3',   # Purple
+  `8_34` = 'black' # blue for ctrl cell line
+)
+
+col_scale_MK_CL <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_cell_line,
+  aesthetics = c("colour", "fill")
+)
+
+# Color annotations
+## SCR 
+brown = "#ffb000"
+
+#color schemes
+myCols_blue = c('#525252', "#080E5B",  "#212B71", "#3A4987", "#465893", "#5A719A", "#6C8AA0")
+names(myCols_blue) = c("ctrl", paste0("P", 1:6))
+colScale7_blue <- scale_colour_manual(name = "population", values = myCols_blue)
+fillScale7_blue <- scale_fill_manual(name = "population", values = myCols_blue)
+
+myCols_blue_strand = c( "#080E5B", "#5A719A")
+names(myCols_blue_strand) = c("+","-")
+colScale2_blue <- scale_colour_manual(name = "strand", values = myCols_blue_strand)
+fillScale2_blue <- scale_fill_manual(name = "strand", values = myCols_blue_strand)
+
+myCols_green = c('#525252',"#0A3F30", "#175643", "#246D58", "#30846B", "#3D9B7E", "#49B292")
+names(myCols_green) = c("ctrl", paste0("P", 1:6))
+colScale7_green <- scale_colour_manual(name = "population", values = myCols_green)
+fillScale7_green <- scale_fill_manual(name = "population", values = myCols_green)
+
+myCols_orange = c('#525252', "#572601", "#72380B", "#8F4A15", "#AA5C20", "#C66D2A", "#E07F34")
+names(myCols_orange) = c("ctrl", paste0("P", 1:6))
+colScale7_orange <- scale_colour_manual(name = "population", values = myCols_orange)
+fillScale7_orange <- scale_fill_manual(name = "population", values = myCols_orange)
+
+myCols_purple = c('#525252', "#2E2D47", "#424060", "#565378", "#696791", "#7D7AA9", "#918DC2")
+names(myCols_purple) = c("ctrl", paste0("P", 1:6))
+colScale7_purple <- scale_colour_manual(name = "population", values = myCols_purple)
+fillScale7_purple <- scale_fill_manual(name = "population", values = myCols_purple)
+```
+
+
+# Functions
+## Beeswarm function
+```{r Beeswarm function}
+plot_beeswarm_only = function(TIB, CL = "23_34A", EXP = all_exp, P_RANGE = prange_zoom,
+                              PLOT_CTCF = F, PLOT_ANNOT = T,
+                              TITLE = NULL, POINT_SIZE = 0.75, RANDOM_METHOD = "quasirandom",
+                              NEXT_RANGE = NULL){
+  tib_for_plot = filter(TIB, hopped & chr == "chr3" & cell_line %in% CL & experiment %in% EXP & start >= P_RANGE[1] & start <= P_RANGE[2])
+  LP_tib_cl = select(tib_for_plot, c(cell_line, landing_pad)) %>% 
+    distinct() %>% left_join(LP_tib)
+  
+  ggplot(filter(tib_for_plot, hopped & chr == "chr3" & cell_line %in% CL & experiment %in% EXP),
+         aes(x = start, y = population, col = population)) +
+    {if(length(CL)>1) facet_grid(cell_line ~ .)} +  #only facet when necessary
+
+    {if (PLOT_ANNOT)
+      list( #add elements in a list, you cannot use + inside an if statement
+        # annotate enhancer
+        geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+        annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+        # annotate gene
+        annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red'),
+        geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red') )} +
+    
+     #annotate landing pad
+    {if(PLOT_ANNOT & length(CL)== 1)
+      geom_vline(xintercept = pull(
+        filter(LP_tib, landing_pad %in% unique(tib_for_plot$landing_pad)), 
+        start),
+        col = 'darkgrey')} +
+    {if(PLOT_ANNOT & length(CL) > 1)
+       geom_vline(data = LP_tib_cl, aes(xintercept = start), col = 'darkgrey')} +
+
+    # # annotate CTCFs
+    {if(PLOT_CTCF)geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey', lty="11")}+
+    {if(!is.null(NEXT_RANGE)) geom_rug(data = tibble(range = NEXT_RANGE),
+                                       aes(x = range),
+                                       fill = 'grey',
+                                       inherit.aes = F)}+
+    
+    
+    #datapoints
+    geom_quasirandom(alpha = 0.5, size = POINT_SIZE, varwidth = T, bandwidth = 0.8,
+                     # shape = 16, #changes to point without border, so alpha applies to the whole point
+                     method = RANDOM_METHOD,
+                     stroke = NA) +
+    geom_text(data = plyr::count(tib_for_plot, vars = c("cell_line", "population")), aes(label = paste("n = ", freq, sep = ""),
+                                                                                         x = Inf),
+              hjust = "inward", vjust = "top",
+              col = 'black') +
+    
+    #layout:
+    labs(x='Genomic coordinate (Mb)',y='sorted gate') +
+    theme_classic(base_size = 16) +
+    theme(legend.position = "none") +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                       limits=P_RANGE, expand=c(0,0)) +
+    scale_y_discrete(limits = rev, drop=F) +
+    ggtitle(TITLE) +
+    ## CHANGED: choose the appropriate colour scale based on CL
+    { if (length(CL)==1) {
+        switch(CL,
+          "23_34A"       = colScale7_blue,
+          "23_MK01_C5"   = colScale7_green,
+          "23_MK02_C2"   = colScale7_orange,
+          "23_MK03_C1"   = colScale7_purple,
+          colScale7_blue  # default fallback
+        )
+      } else {
+        colScale7_blue  # when faceting multiple lines, fall back to blue (or choose your own default)
+      }
+    }
+}
+```
+
+## Stranded beeswarm function
+```{r stranded beeswarm}
+plot_beeswarm_only_stranded = function(TIB, CL = "23_34A", EXP = all_exp, P_RANGE = prange_zoom,
+                              PLOT_CTCF = FALSE, PLOT_ANNOT = TRUE,
+                              SPLIT_STRAND = FALSE,
+                              TITLE = NULL, POINT_SIZE = 0.75, RANDOM_METHOD = "quasirandom",
+                              NEXT_RANGE = NULL){
+  
+  # 1) subset once
+  tib_for_plot <- TIB %>%
+    filter(hopped, chr == "chr3",
+           cell_line %in% CL, experiment %in% EXP,
+           between(start, P_RANGE[1], P_RANGE[2]))
+  
+  # 2) landing‐pad join (unchanged)
+  LP_tib_cl <- tib_for_plot %>%
+    distinct(cell_line, landing_pad) %>%
+    left_join(LP_tib, by = "landing_pad")
+  
+  # 3) compute counts *with* strand if requested
+  if (SPLIT_STRAND) {
+    count_df <- tib_for_plot %>%
+      count(cell_line, strand, population)
+  } else {
+    count_df <- tib_for_plot %>%
+      count(cell_line, population)
+  }
+  
+ 
+  # 4) now build the plot
+  ggplot(tib_for_plot,
+         aes(x = start, y = population, col = population)) +
+    
+    # faceting
+    {
+      if (SPLIT_STRAND) {
+        if (length(CL) > 1) facet_grid(cell_line ~ strand)
+        else                facet_wrap(~ strand)
+      } else {
+        if (length(CL) > 1) facet_grid(cell_line ~ .)
+        else                NULL
+      }
+    } +
+    
+    # (all your annotations go here, unchanged) … +
+    {if (PLOT_ANNOT)
+      list( #add elements in a list, you cannot use + inside an if statement
+        # annotate enhancer
+        geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+        annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+        # annotate LP
+        geom_vline(xintercept = start(landingPad_8), col = "black", linetype = "dotted"), 
+        geom_vline(xintercept = start(landingPad_23), col = "black", linetype = "dotted"),
+        
+        # annotate gene
+        annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red'),
+        geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red') )} +
+    
+    # # annotate CTCFs
+    {if(PLOT_CTCF)geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey', lty="11")}+
+    {if(!is.null(NEXT_RANGE)) geom_rug(data = tibble(range = NEXT_RANGE),
+                                       aes(x = range),
+                                       fill = 'grey',
+                                       inherit.aes = F)}+
+    
+    geom_quasirandom(alpha = 0.5, size = POINT_SIZE, varwidth = TRUE,
+                     bandwidth = 0.8, method = RANDOM_METHOD, stroke = NA) +
+    
+    # 5) the *only* geom_text, pointing at count_df
+    geom_text(
+      data = count_df,
+      aes(label = paste0("n = ", n), x = Inf),
+      hjust = "inward", vjust = "top",
+      col = 'black'
+    ) +
+    
+    # 6) scales / theme / title (unchanged) …
+    labs(x = 'Genomic coordinate (Mb)', y = 'sorted gate') +
+    theme_classic(base_size = 16) +
+    theme(legend.position = "none") +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                       limits=P_RANGE, expand=c(0,0)) +
+    scale_y_discrete(limits = rev, drop=F) +
+    ggtitle(TITLE) +
+    ## CHANGED: choose the appropriate colour scale based on CL
+    { if (length(CL)==1) {
+        switch(CL,
+          "23_34A"       = colScale7_blue,
+          "23_MK01_C5"   = colScale7_green,
+          "23_MK02_C2"   = colScale7_orange,
+          "23_MK03_C1"   = colScale7_purple,
+          colScale7_blue  # default fallback
+        )
+      } else {
+        colScale7_blue  # when faceting multiple lines, fall back to blue (or choose your own default)
+      }
+    }
+    
+}
+
+```
+
+## Enrichment function
+How does the enrichment function work
+1. makes bins, counts int per bin
+2. calculates fraction per bin (fraction over total)
+3. summes fractions per window per population
+4. divides window fraction of interest over control 
+
+NOTE: I added a section to count integrations of separate populations per window. This should allow us afterwards to filter for windows that have integrations present. 
+```{r adapted enrichment function}
+# Adapted from Christines function
+
+####################
+#Below is the function to calculate enrichment over control per N kb.
+# Was built for 6 gate reporter hopping, but I think this one should directly work for CTCF hopping as well.
+
+# It takes the integrations per binsize and number of bins, so 1000 *10 = 10kb window, slided by 1kb
+#####################
+
+enrichm_function_fixed_bins_CL <- function(TIB, CL = "CBS16", EXP = all_exp, 
+                                           binsize = 1000, N_bins_window = 10, 
+                                           calculation_window =  c(34091354, 35744137),
+                                           MOTIF = c("forward", "reverse")){
+  tib_for_analysis = dplyr::filter(TIB, hopped & cell_line %in% CL & experiment %in% EXP)
+
+  # total integrations per population (no strand filter here)
+  total_ints = tib_for_analysis %>% dplyr::group_by(population) %>% dplyr::summarise(total_ints = dplyr::n(), .groups = "drop")
+
+  # bin boundaries
+  boundaries_all = seq(from = calculation_window[1], to = calculation_window[2], by = binsize)
+  boundaries_all_tib = tibble::tibble(interval_number = seq_along(boundaries_all), start_interval = boundaries_all) %>%
+    dplyr::arrange(start_interval) %>%
+    dplyr::mutate(mid_interval = (start_interval + dplyr::lead(start_interval, 1))/2)
+
+  # counts per bin per population
+  cut_by_intervals = tib_for_analysis %>% 
+    dplyr::filter(motif %in% MOTIF) %>% 
+    dplyr::filter(chr == "chr3", start >= calculation_window[1], start <= calculation_window[2]) %>%
+    dplyr::arrange(start) %>%
+    dplyr::mutate(interval_number = findInterval(start, boundaries_all)) %>%
+    dplyr::group_by(population, interval_number) %>%
+    dplyr::summarise(N_ints = dplyr::n(), .groups = "drop")
+
+  # wide: counts per bin (include empty bins)
+  cut_by_intervals_wide = dplyr::left_join(boundaries_all_tib, cut_by_intervals, by = "interval_number") %>%
+    dplyr::mutate(N_ints = tidyr::replace_na(N_ints, 0)) %>%
+    dplyr::arrange(interval_number) %>%
+    tidyr::pivot_wider(id_cols = c('start_interval','interval_number','mid_interval'),
+                       names_from = population, values_from = N_ints, values_fill = 0) %>%
+    dplyr::select(-tidyselect::any_of('NA'))
+
+  ## ---- NEW PART: rolling raw counts per window -----------------------------
+  # compute rolling sum of raw counts per population
+  counts_roll_wide <- cut_by_intervals_wide %>%
+    dplyr::mutate(dplyr::across(
+      -c(start_interval, interval_number, mid_interval),
+      ~ RcppRoll::roll_sum(.x, n = N_bins_window, align = "center", fill = NA_real_),
+      .names = "{.col}_counts"
+    ))
+
+  # long: counts_window per population
+  counts_long <- counts_roll_wide %>%
+    tidyr::pivot_longer(cols = tidyselect::ends_with("_counts"),
+                        names_to = "population", values_to = "counts_window") %>%
+    dplyr::mutate(population = sub("_counts$", "", population)) %>%
+    dplyr::select(start_interval, interval_number, mid_interval, population, counts_window)
+
+  # grab ctrl counts per window for later filtering
+  ctrl_counts <- counts_long %>%
+    dplyr::filter(population == "ctrl") %>%
+    dplyr::select(interval_number, ctrl_counts_window = counts_window)
+  ## -------------------------------------------------------------------------
+
+  # enrichment as before
+  enrich_ints_by_bin  = cut_by_intervals_wide %>%
+    tidyr::pivot_longer(cols = -c('start_interval','interval_number','mid_interval'),
+                        names_to = "population", values_to = 'N_in_window') %>%
+    dplyr::left_join(total_ints, by = "population") %>%
+    dplyr::mutate(fract_of_ints = N_in_window / total_ints) %>%
+    dplyr::select(-c('N_in_window','total_ints')) %>%
+    tidyr::pivot_wider(names_from = population, values_from = fract_of_ints) %>%
+    dplyr::mutate(dplyr::across(
+      -c('start_interval','interval_number','mid_interval'),
+      ~ RcppRoll::roll_sum(.x, n = N_bins_window, align = "center", fill = NA_real_)
+    )) %>%
+    dplyr::mutate(dplyr::across(
+      -c('start_interval','interval_number','mid_interval'),
+      ~ .x / ctrl
+    )) %>%
+    tidyr::pivot_longer(-c('start_interval','interval_number','mid_interval'),
+                        values_to = 'int_enrich', names_to = 'population')
+
+  # add counts per window for current population + ctrl
+  enrich_ints_by_bin %>%
+    dplyr::left_join(counts_long, by = c("start_interval","interval_number","mid_interval","population")) %>%
+    dplyr::left_join(ctrl_counts, by = "interval_number")
+}
+
+
+enrichm_function_fixed_bins = function(TIB, CL = "CBS16", EXP = all_exp, binsize = 1000, N_bins_window = 10,  calculation_window =  c(34091354, 35744137), MOTIF = c("foward","reverse")){
+  enrich_ls = lapply(CL, function(cl){
+    enrich_cl = enrichm_function_fixed_bins_CL(TIB, CL = cl, EXP, binsize = binsize, N_bins_window = N_bins_window, calculation_window = calculation_window,  MOTIF)
+    enrich_cl
+  })
+  names(enrich_ls) = CL
+  bind_rows(enrich_ls, .id = 'cell_line')
+}
+
+enrichm_function_fixed_bins_stranded = function(TIB, CL = "CBS16", EXP = all_exp, binsize = 1000, N_bins_window = 10,  calculation_window =  c(34091354, 35744137)){
+  bind_rows("forward" = enrichm_function_fixed_bins(TIB, CL, EXP, binsize = binsize, N_bins_window = N_bins_window, calculation_window = calculation_window, MOTIF = "forward"),
+            "reverse" = enrichm_function_fixed_bins(TIB, CL, EXP, binsize = binsize, N_bins_window = N_bins_window, calculation_window = calculation_window, MOTIF = "reverse"), .id = 'motif')}
+
+```
+
+# Plotting data
+## Figure 6B - Beeswarm of CBS-Sox2P data
+```{r Beeswarm of CBS-Sox2P data Figure 6B}
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & experiment %in% all_exp & population == "ctrl") %>% droplevels(),
+                   CL = c("23_34A", "23_MK03_C1", "23_MK01_C5", "23_MK02_C2"),
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = T,
+                   P_RANGE = range_2Mb,
+                   POINT_SIZE = 1)
+
+```
+
+## Figure 6C - Beeswarm of CBS only data
+```{r Beeswarm of CBS only data - Figure 6C}
+all_CL = unique(tib_CBS16_16A_comb$cell_line)
+all_exp = unique(tib_CBS16_16A_comb$experiment)
+
+plot_beeswarm_only(TIB = tib_CBS16_16A_comb %>% 
+                   filter(hopped & chr == "chr3" & experiment %in% all_exp & population == "ctrl") %>% droplevels(),
+                   CL = all_CL,
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = T,
+                   P_RANGE = range_2Mb,
+                   POINT_SIZE = 1)
+```
+
+# Calculate hopping bias
+## CBS-Sox2P reporters
+### Count int. 1MB up/downstream
+```{r}
+# count 1MB to the right and left of the LP, calculate fraction over total for each
+
+tib_ctrl_fract_tot = tib_filtered_curated_strict %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(landingPad_23)-1e6) & start <= start(landingPad_23)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+  
+# coordinate of the launch pad (numeric)
+lp_coord <- start(landingPad_23)
+
+# count upstream and downstream separately
+tib_ctrl_fract_split <- tib_filtered_curated_strict %>%
+  filter(population == "ctrl",
+         launch_pad_location == "-116 kb",
+         chr == "chr3",
+         hopped,
+         start >= (lp_coord - 1e6),
+         start <= (lp_coord + 1e6)) %>%
+  mutate(region = case_when(
+    start < lp_coord ~ "upstream",
+    start > lp_coord ~ "downstream",
+    TRUE ~ "at_LP"
+  )) %>%
+  group_by(cell_line, region) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  # join with total counts
+  left_join(tib_ctrl_fract_tot, by = "cell_line") %>%
+  mutate(frac = n / total_n)
+
+tib_ctrl_fract_split
+```
+
+### Function to calculate p-value fisher test
+```{r}
+# Make a helper function: build a 2x2 table and run Fisher’s test
+compare_to_control <- function(df, test_line, control_line = "23_34A") {
+  sub <- df %>%
+    filter(cell_line %in% c(control_line, test_line)) %>%
+    select(cell_line, region, n) %>%
+    pivot_wider(names_from = region, values_from = n)
+  
+  mat <- as.matrix(sub[, c("upstream", "downstream")])
+  rownames(mat) <- sub$cell_line
+  
+  res <- fisher.test(mat)
+  tibble(test_line = test_line,
+         p_value = res$p.value,
+         odds_ratio = res$estimate)
+}
+
+# Run for each MK line
+results <- map_dfr(c("23_MK01_C5", "23_MK02_C2", "23_MK03_C1"),
+                   ~compare_to_control(tib_ctrl_fract_split, .x))
+
+results
+```
+**Conclusion:**
+MK01: odds ratio 2.73 → significantly more downstream integrations than control (p ≈ 1.8e-9).
+MK02: odds ratio 0.38 → significantly more upstream integrations than control (p ≈ 1.8e-17).
+MK03: odds ratio 2.0 → significantly more downstream integrations than control (p ≈ 9.9e-10).
+So compared to 23_34A, the MK lines show skewed distributions, but in opposite directions for MK02
+
+### Figure 6D - CBS_Sox2P Plot results
+```{r}
+ggplot(tib_ctrl_fract_split,
+       aes(x = cell_line, y = frac, fill = region)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange")) +
+  ylab("Fraction of integrations") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r Figure 6D}
+library(ggsignif)
+
+# Prep results for plotting (add significance stars)
+results <- results %>%
+  mutate(sig = case_when(
+    p_value < 1e-10 ~ "***",
+    p_value < 1e-5  ~ "**",
+    p_value < 0.01  ~ "*",
+    TRUE            ~ "ns"
+  ))
+
+# Fraction barplot
+p <- ggplot(tib_ctrl_fract_split,
+            aes(x = cell_line, y = frac, fill = region)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange")) +
+  ylab("Fraction of integrations (±1 Mb)") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Add significance annotations comparing to 23_34A
+pCBS_Sox2P_FishTest = 
+p + geom_signif(
+      comparisons = list(c("23_34A", "23_MK03_C1"),
+                         c("23_34A", "23_MK01_C5"),
+                         c("23_34A", "23_MK02_C2")),
+      annotations = results$p_value ,
+      y_position = c(1.05, 1.12, 1.19),  # adjust so stars are nicely spaced above bars
+      tip_length = 0.01
+    )
+pCBS_Sox2P_FishTest
+```
+
+### Figure S6G - Fraction of integrations in Sox2-SCR interval
+```{r}
+tib_ctrl_fract_tot_LP116 = tib_filtered_curated_strict %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(landingPad_23)-1e6) & start <= start(landingPad_23)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+
+tib_ctrl_fract_Sox2_SCR_LP116 = tib_filtered_curated_strict %>% 
+  filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (end(Sox2_gene)) & start <= start(enhancer)) %>%
+  group_by(cell_line) %>% summarise(Sox2_SCR_n = n()) %>% left_join(tib_ctrl_fract_tot_LP116) %>%
+  mutate(fract_interval = Sox2_SCR_n/total_n)
+
+kable(tib_ctrl_fract_Sox2_SCR_LP116)
+```
+
+```{r Figure S6G}
+# count 1MB to the left of Sox2 gene, than Sox2-SCR, 1Mb end of SCR, calculate fraction over total
+tib_ctrl_fract_tot = tib_filtered_curated_strict %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(Sox2_gene)-1e6) & start <= end(enhancer)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+  
+# coordinate of the launch pad (numeric)
+Sox2_coord <- start(Sox2_gene)
+SCR_coord <- end(enhancer)
+
+# count upstream and downstream separately
+tib_ctrl_fract_split <- tib_filtered_curated_strict %>%
+  filter(population == "ctrl",
+         launch_pad_location == "-116 kb",
+         chr == "chr3",
+         hopped,
+         start >= (Sox2_coord - 1e6),
+         start <= (SCR_coord + 1e6)) %>%
+  mutate(region = case_when(
+    start < Sox2_coord ~ "upstream",
+    start > end(Sox2_gene) & start < start(enhancer) ~ "Sox2_SCR",
+    start > SCR_coord ~ "downstream",
+    TRUE ~ "in_Sox2_or_SCR"
+  )) %>%
+  group_by(cell_line, region) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  # join with total counts
+  left_join(tib_ctrl_fract_tot, by = "cell_line") %>%
+  mutate(frac = n / total_n)
+
+tib_ctrl_fract_split %>% 
+  ggplot(aes(x = cell_line, y = frac, fill = region)) +
+  geom_bar(stat= "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange", "Sox2_SCR" = "purple", "in_Sox2_or_SCR" = "grey")) +
+  ylab("Fraction of integrations") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# add % to plot
+tib_ctrl_fract_split %>% 
+  ggplot(aes(x = cell_line, y = frac, fill = region)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = scales::percent(frac, accuracy = 1)),
+            position = position_stack(vjust = 0.5),
+            color = "black",
+            size = 3) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c(
+    "upstream" = "skyblue",
+    "downstream" = "orange",
+    "Sox2_SCR" = "purple",
+    "in_Sox2_or_SCR" = "grey"
+  )) +
+  ylab("Fraction of integrations (±1 Mb)") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("Fraction of integrations from LP-116 kb") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+##CBS only reporters
+### Test significance of up/do for ctrl integrations
+```{r}
+# count 1MB to the right and left of the LP, calculate fraction over total for each
+tib_ctrl_fract_tot = tib_CBS16_16A_comb %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(landingPad_23)-1e6) & start <= start(landingPad_23)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+  
+# coordinate of the launch pad (numeric)
+lp_coord <- start(landingPad_23)
+
+# count upstream and downstream separately
+tib_ctrl_fract_split <- tib_CBS16_16A_comb %>%
+  filter(population == "ctrl",
+         launch_pad_location == "-116 kb",
+         chr == "chr3",
+         hopped,
+         start >= (lp_coord - 1e6),
+         start <= (lp_coord + 1e6)) %>%
+  mutate(region = case_when(
+    start < lp_coord ~ "upstream",
+    start > lp_coord ~ "downstream",
+    TRUE ~ "at_LP"
+  )) %>%
+  group_by(cell_line, region) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  # join with total counts
+  left_join(tib_ctrl_fract_tot, by = "cell_line") %>%
+  mutate(frac = n / total_n)
+
+tib_ctrl_fract_split
+```
+
+### Function to calculate p-value fisher test (counts are quite high so not sure if Fisher test is right choice)
+```{r}
+# Make a helper function: build a 2x2 table and run Fisher’s test
+compare_to_control <- function(df, test_line, control_line = "CRE6") {
+  sub <- df %>%
+    filter(cell_line %in% c(control_line, test_line)) %>%
+    select(cell_line, region, n) %>%
+    pivot_wider(names_from = region, values_from = n)
+  
+  mat <- as.matrix(sub[, c("upstream", "downstream")])
+  rownames(mat) <- sub$cell_line
+  
+  res <- fisher.test(mat)
+  tibble(test_line = test_line,
+         p_value = res$p.value,
+         odds_ratio = res$estimate)
+}
+
+# Run for each MK line
+results <- map_dfr(c("CBS16_16A", "3xCTCF"),
+                   ~compare_to_control(tib_ctrl_fract_split, .x))
+
+results
+```
+**Conclusion:**
+3xCTCF has significantly more downstream integrations than CRE6
+CBS16_CRE6 has more upstream than CRE6 
+
+### Figure 6D - CBS - Plot results
+```{r}
+ggplot(tib_ctrl_fract_split,
+       aes(x = cell_line, y = frac, fill = region)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange")) +
+  ylab("Fraction of integrations") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r Figure 6D - CBS}
+# Prep results for plotting (add significance stars)
+results <- results %>%
+  mutate(sig = case_when(
+    p_value < 1e-10 ~ "***",
+    p_value < 1e-5  ~ "**",
+    p_value < 0.01  ~ "*",
+    TRUE            ~ "ns"
+  ))
+
+# Fraction barplot
+p <- ggplot(tib_ctrl_fract_split,
+            aes(x = cell_line, y = frac, fill = region)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange")) +
+  ylab("Fraction of integrations (±1 Mb)") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Add significance annotations comparing to CRE6
+pCBS_only_FishTest = 
+p + geom_signif(
+      comparisons = list(c("CRE6", "3xCTCF"),
+                         c("CRE6", "CBS16_16A")),
+      annotations = results$p_value,
+      y_position = c(1.05, 1.19),  # adjust so stars are nicely spaced above bars
+      tip_length = 0.01
+    )
+
+pCBS_only_FishTest
+```
+### Combined figure 6D
+```{r combined figure 6D}
+plot_grid(pCBS_Sox2P_FishTest, pCBS_only_FishTest, ncol = 2, align = "lb")
+
+```
+
+### Fraction of integrations in Sox2-SCR interval
+```{r CBS only}
+
+tib_ctrl_fract_tot_LP116_CBS_only = tib_CBS16_16A_comb %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(landingPad_23)-1e6) & start <= start(landingPad_23)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+
+tib_ctrl_fract_Sox2_SCR_LP116_CBS_only = tib_CBS16_16A_comb %>% 
+  filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (end(Sox2_gene)) & start <= start(enhancer)) %>%
+  group_by(cell_line) %>% summarise(Sox2_SCR_n = n()) %>% left_join(tib_ctrl_fract_tot_LP116_CBS_only) %>%
+  mutate(fract_interval = Sox2_SCR_n/total_n)
+
+kable(tib_ctrl_fract_Sox2_SCR_LP116_CBS_only)
+```
+
+```{r}
+# coordinate of the launch pad (numeric)
+Sox2_coord <- start(Sox2_gene)
+SCR_coord <- end(enhancer)
+
+# count upstream and downstream separately
+tib_ctrl_fract_split_CBS_only <- tib_CBS16_16A_comb %>%
+  filter(population == "ctrl",
+         launch_pad_location == "-116 kb",
+         chr == "chr3",
+         hopped,
+         start >= (Sox2_coord - 1e6),
+         start <= (SCR_coord + 1e6)) %>%
+  mutate(region = case_when(
+    start < Sox2_coord ~ "upstream",
+    start > end(Sox2_gene) & start < start(enhancer) ~ "Sox2_SCR",
+    start > SCR_coord ~ "downstream",
+    TRUE ~ "in_Sox2_or_SCR"
+  )) %>%
+  group_by(cell_line, region) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  # join with total counts
+  left_join(tib_ctrl_fract_tot, by = "cell_line") %>%
+  mutate(frac = n / total_n)
+
+tib_ctrl_fract_split_CBS_only %>% 
+  ggplot(aes(x = cell_line, y = frac, fill = region)) +
+  geom_bar(stat= "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange", "Sox2_SCR" = "purple", "in_Sox2_or_SCR" = "grey")) +
+  ylab("Fraction of integrations") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# add % to plot
+tib_ctrl_fract_split_CBS_only %>% 
+  ggplot(aes(x = cell_line, y = frac, fill = region)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = scales::percent(frac, accuracy = 1)),
+            position = position_stack(vjust = 0.5),
+            color = "black",
+            size = 3) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c(
+    "upstream" = "skyblue",
+    "downstream" = "orange",
+    "Sox2_SCR" = "purple",
+    "in_Sox2_or_SCR" = "grey"
+  )) +
+  ylab("Fraction of integrations (±1 Mb)") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("Fraction of integrations from LP-116 kb") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+
+# Enrichment over non-CBS
+## CBS-Sox2P
+### Adapted function
+```{r}
+# Enrichment of cell lines vs a reference cell line
+# population is fixed (default "ctrl")
+
+enrich_between_cell_lines_CL <- function(
+  TIB,
+  REF_CL = "23_34A",
+  CL = c("23_34A", "23_MK03_C1", "23_MK01_C5", "23_MK02_C2"),
+  POP = "ctrl",
+  EXP = all_exp,
+  binsize = 1000,
+  N_bins_window = 10,
+  calculation_window = c(34091354, 35744137)
+) {
+  # make sure reference is included
+  CL_use <- union(REF_CL, CL)
+
+  tib_for_analysis <- TIB %>%
+    dplyr::filter(
+      hopped,
+      !is.na(cell_line), 
+      cell_line %in% CL_use,
+      experiment %in% EXP,
+      population %in% POP
+    )
+
+  # total integrations per cell line
+  total_ints <- tib_for_analysis %>%
+    dplyr::group_by(cell_line) %>%
+    dplyr::summarise(total_ints = dplyr::n(), .groups = "drop")
+
+  # bin boundaries
+  boundaries_all <- seq(from = calculation_window[1],
+                        to   = calculation_window[2],
+                        by   = binsize)
+
+  boundaries_all_tib <- tibble::tibble(
+    interval_number = seq_along(boundaries_all),
+    start_interval  = boundaries_all
+  ) %>%
+    dplyr::arrange(start_interval) %>%
+    dplyr::mutate(
+      mid_interval = (start_interval + dplyr::lead(start_interval, 1))/2
+    )
+
+  # counts per bin per cell line
+  cut_by_intervals <- tib_for_analysis %>%
+    dplyr::filter(
+      chr == "chr3",
+      start >= calculation_window[1],
+      start <= calculation_window[2]
+    ) %>%
+    dplyr::arrange(start) %>%
+    dplyr::mutate(interval_number = findInterval(start, boundaries_all)) %>%
+    dplyr::group_by(cell_line, interval_number) %>%
+    dplyr::summarise(N_ints = dplyr::n(), .groups = "drop")
+
+  # wide: counts per bin (include empty bins)
+  cut_by_intervals_wide <- dplyr::left_join(boundaries_all_tib, cut_by_intervals,
+                                            by = "interval_number") %>%
+    dplyr::mutate(N_ints = tidyr::replace_na(N_ints, 0)) %>%
+    dplyr::arrange(interval_number) %>%
+    tidyr::pivot_wider(
+      id_cols      = c("start_interval", "interval_number", "mid_interval"),
+      names_from   = cell_line,
+      values_from  = N_ints,
+      values_fill  = 0
+    ) %>%
+    # *** keep only real cell lines, drop any weird `NA` column ***
+    dplyr::select(start_interval, interval_number, mid_interval, dplyr::all_of(CL_use))
+
+  ## ---- rolling raw counts per window (for later filtering) ----
+  counts_roll_wide <- cut_by_intervals_wide %>%
+    dplyr::mutate(dplyr::across(
+      -c(start_interval, interval_number, mid_interval),
+      ~ RcppRoll::roll_sum(.x, n = N_bins_window,
+                           align = "center", fill = NA_real_),
+      .names = "{.col}_counts"
+    ))
+
+  counts_long <- counts_roll_wide %>%
+    tidyr::pivot_longer(
+      cols      = tidyselect::ends_with("_counts"),
+      names_to  = "cell_line",
+      values_to = "counts_window"
+    ) %>%
+    dplyr::mutate(cell_line = sub("_counts$", "", cell_line))
+
+  ctrl_counts <- counts_long %>%
+    dplyr::filter(cell_line == REF_CL) %>%
+    dplyr::select(interval_number, ctrl_counts_window = counts_window)
+
+  ## ---- enrichment vs reference cell line -----------------------
+  enrich_ints_by_bin <- cut_by_intervals_wide %>%
+    tidyr::pivot_longer(
+      cols      = -c("start_interval", "interval_number", "mid_interval"),
+      names_to  = "cell_line",
+      values_to = "N_in_window"
+    ) %>%
+    dplyr::left_join(total_ints, by = "cell_line") %>%
+    dplyr::mutate(fract_of_ints = N_in_window / total_ints) %>%
+    dplyr::select(-c("N_in_window", "total_ints")) %>%
+    tidyr::pivot_wider(
+      names_from  = "cell_line",
+      values_from = "fract_of_ints"
+    ) %>%
+    # smooth: rolling sum of fractions per window
+    dplyr::mutate(dplyr::across(
+      -c("start_interval", "interval_number", "mid_interval"),
+      ~ RcppRoll::roll_sum(.x, n = N_bins_window,
+                           align = "center", fill = NA_real_)
+    )) %>%
+    # divide each cell line by the reference cell line
+    dplyr::mutate(dplyr::across(
+      -c("start_interval", "interval_number", "mid_interval"),
+      ~ .x / .data[[REF_CL]]
+    )) %>%
+    tidyr::pivot_longer(
+      -c("start_interval", "interval_number", "mid_interval"),
+      names_to  = "cell_line",
+      values_to = "int_enrich"
+    )
+
+  # add window counts (per cell line + ref)
+  enrich_ints_by_bin %>%
+    dplyr::left_join(counts_long,
+                     by = c("start_interval", "interval_number",
+                            "mid_interval", "cell_line")) %>%
+    dplyr::left_join(ctrl_counts, by = "interval_number")
+}
+
+```
+## Plotting 
+### CBS-Sox2P
+```{r}
+# Calculate enrichment of CBS-Sox2P reporters over Sox2P only. 
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+enrich_23_ctrl_CL <- enrich_between_cell_lines_CL(
+  TIB = tib_filtered_curated_strict,
+  REF_CL = "23_34A",
+  CL = c("23_34A", "23_MK03_C1", "23_MK01_C5", "23_MK02_C2"),
+  POP = "ctrl",
+  EXP = all_exp,
+  binsize = 2000,
+  N_bins_window = 10,
+  calculation_window = range_2Mb)
+
+# make a plotting column that is NA where we don't trust the value
+enrich_23_ctrl_CL_plot <- enrich_23_ctrl_CL %>%
+  mutate(
+    int_enrich_plot = if_else(
+      cell_line != "23_34A" &
+        ctrl_counts_window >= 2 &
+        counts_window      >= 2 &
+        is.finite(int_enrich),
+      int_enrich,
+      NA_real_
+    )
+  )
+
+# Quick plot: enrichment vs reference
+enrich_23_ctrl_CL_plot %>%
+  filter(cell_line != "23_34A") %>%
+  ggplot(aes(x = mid_interval / 1e6,
+             y = int_enrich_plot,
+             colour = cell_line,
+             group  = cell_line)) +
+  geom_line(na.rm = TRUE) +          # NA -> gaps, not removed rows
+  #geom_point() +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("Enrichment over 23_34A (ctrl)") +
+  theme_classic()
+
+# with annotations
+enrich_23_ctrl_CL_plot %>%
+  filter(cell_line != "23_34A") %>%
+  ggplot(aes(x = mid_interval,
+             y = int_enrich_plot,
+             colour = cell_line,
+             group  = cell_line)) +
+  #geom_point(na.rm = TRUE) +
+  geom_line(na.rm = TRUE) +
+  facet_wrap(~ cell_line) +
+  # enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer),
+           ymin = -Inf, ymax = Inf, alpha = .2, fill = brown) +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown) +
+  # gene
+  annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene),
+           ymin = -Inf, ymax = Inf, alpha = .2, fill = "red") +
+  geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = "red") +
+  # CTCFs
+  geom_vline(xintercept = start(CTCF_mm10.chr3),
+             col = "darkgrey", linetype = "dotted") +
+  geom_vline(xintercept = 34772210,
+             col = "darkgrey", linetype = "dotted") +
+  # landing pad
+  geom_vline(xintercept = start(landingPad_23), col = "darkgrey") +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  scale_x_continuous(
+    breaks  = scales::pretty_breaks(n = 6),
+    labels  = scales::unit_format(scale = 1e-6, accuracy = 0.1, unit = NULL),
+    limits  = range_2Mb,
+    expand=c(0,0)
+  ) +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("Enrichment over 23_34A (ctrl)") +
+  theme_classic()
+
+```
+
+### CBS-only
+```{r}
+# Calculate enrichment of CBS-Sox2P reporters over Sox2P only. 
+all_exp = unique(tib_CBS16_16A_comb$experiment)
+
+enrich_CBS_ctrl_CL <- enrich_between_cell_lines_CL(
+  TIB = tib_CBS16_16A_comb,
+  REF_CL = "CRE6",
+  CL = c("CRE6", "CBS16_16A", "3xCTCF"),
+  POP = "ctrl",
+  EXP = all_exp,
+  binsize = 2000,
+  N_bins_window = 10,
+  calculation_window = range_2Mb)
+
+# make a plotting column that is NA where we don't trust the value
+enrich_CBS_ctrl_CL_plot <- enrich_CBS_ctrl_CL %>%
+  mutate(
+    int_enrich_plot = if_else(
+      cell_line != "CRE6" &
+        ctrl_counts_window >= 3 &
+        counts_window      >= 3 &
+        is.finite(int_enrich),
+      int_enrich,
+      NA_real_
+    )
+  )
+
+# Quick plot: enrichment vs reference
+enrich_CBS_ctrl_CL_plot %>%
+  filter(cell_line != "CRE6") %>%
+  ggplot(aes(x = mid_interval / 1e6,
+             y = int_enrich_plot,
+             colour = cell_line,
+             group  = cell_line)) +
+  geom_line(na.rm = TRUE) +          # NA -> gaps, not removed rows
+  #geom_point() +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("Enrichment over 23_34A (ctrl)") +
+  theme_classic()
+
+# with annotations
+enrich_CBS_ctrl_CL_plot %>%
+  filter(cell_line != "CRE6") %>%
+  ggplot(aes(x = mid_interval,
+             y = int_enrich_plot,
+             colour = cell_line,
+             group  = cell_line)) +
+  #geom_point(na.rm = TRUE) +
+  geom_line(na.rm = TRUE) +
+  facet_wrap(~ cell_line) +
+  # enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer),
+           ymin = -Inf, ymax = Inf, alpha = .2, fill = brown) +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown) +
+  # gene
+  annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene),
+           ymin = -Inf, ymax = Inf, alpha = .2, fill = "red") +
+  geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = "red") +
+  # CTCFs
+  geom_vline(xintercept = start(CTCF_mm10.chr3_extra),
+             col = "darkgrey", linetype = "dotted") +
+  # landing pad
+  geom_vline(xintercept = start(landingPad_23), col = "darkgrey") +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  scale_x_continuous(
+    breaks  = scales::pretty_breaks(n = 6),
+    labels  = scales::unit_format(scale = 1e-6, accuracy = 0.1, unit = NULL),
+    limits  = range_2Mb
+  ) +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("Enrichment over 23_34A (ctrl)") +
+  theme_classic()
+
+```
+
+
+# Bootstrap function
+## CBS-Sox2P
+```{r}
+cl_23 <- c("23_34A", "23_MK03_C1", "23_MK01_C5", "23_MK02_C2")
+
+tib_boot <- tib_filtered_curated_strict %>%
+  filter(
+    population == "ctrl",
+    chr == "chr3",
+    cell_line %in% cl_23
+  ) %>%
+  ungroup()
+
+```
+
+```{r}
+set.seed(456)
+n_boot <- 5000
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+boot_enrich_list <- map(seq_len(n_boot), function(bi) {
+  cat("▶ Bootstrap", bi, "\n")
+  
+  # resample integrations with replacement
+  boot_dat <- tib_boot %>%
+  group_by(cell_line) %>%
+  slice_sample(prop = 1, replace = TRUE) %>%
+  ungroup()
+  
+  # enrichment of each cell line vs 23_34A
+  enrich_between_cell_lines_CL(
+    TIB                = boot_dat,
+    REF_CL             = "23_34A",
+    CL                 = cl_23,
+    POP                = "ctrl",
+    EXP                = all_exp,
+    binsize            = 2000,
+    N_bins_window      = 10,
+    calculation_window = range_2Mb
+  ) %>%
+    mutate(bootstrap = bi)
+})
+
+# Save object 
+saveRDS(boot_enrich_list, "/DATA/projects/CTCF_Sox2/analysis/Enrichment/ME20260303_enrichment_CL_Sox2P_vs_CBS_Sox2P_5000boot_2000_10.rds")
+boot_enrich_list = readRDS("/DATA/projects/CTCF_Sox2/analysis/Enrichment/ME20260303_enrichment_CL_Sox2P_vs_CBS_Sox2P_5000boot_2000_10.rds")
+
+
+
+boot_enrich_df <- bind_rows(boot_enrich_list)
+
+# sanity check: same number of rows per bootstrap
+boot_enrich_df %>% count(bootstrap)
+
+```
+
+### mask bad windows in the bootsrap, not drop them NAs
+```{r}
+min_ctrl <- 3   
+min_test <- 3
+
+boot_enrich_masked <- boot_enrich_df %>%
+  filter(!is.na(cell_line),
+    cell_line != "23_34A") %>%
+  mutate(
+    int_enrich_masked = if_else(
+      ctrl_counts_window >= min_ctrl &
+      counts_window      >= min_test &
+      is.finite(int_enrich),
+      int_enrich,
+      NA_real_
+    )
+  )
+```
+
+### summarise and keep NA if there is no information in bin
+```{r}
+
+ci_df <- boot_enrich_masked %>%
+  group_by(cell_line, mid_interval) %>%
+  summarize(
+    lower  = if (all(is.na(int_enrich_masked))) NA_real_
+             else quantile(int_enrich_masked, 0.025, na.rm = TRUE),
+    median = if (all(is.na(int_enrich_masked))) NA_real_
+             else quantile(int_enrich_masked, 0.5,   na.rm = TRUE),
+    upper  = if (all(is.na(int_enrich_masked))) NA_real_
+             else quantile(int_enrich_masked, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### make sure all windows exist as rows
+```{r}
+
+all_mids <- sort(unique(boot_enrich_df$mid_interval))
+
+#ci_df only contains those mid_intervals where at leasat one boostrap replicate produced something, make sure to have an NA row for every genomic bin
+ci_df_full <- ci_df %>% 
+  tidyr::complete(cell_line, mid_interval = all_mids)
+```
+
+### Figure S5F - Plot
+```{r Figure S5F}
+#combine with real data
+tib_try = enrich_23_ctrl_CL_plot %>% select(mid_interval, cell_line, int_enrich)
+tib_comb = ci_df_full %>% left_join(tib_try) %>%
+  mutate(cell_line = factor(cell_line, levels = c("23_34A", "23_MK03_C1", "23_MK01_C5", "23_MK02_C2")))
+
+pEnrich_lin_CBS_Sox2P =
+ggplot(tib_comb,
+       aes(x = mid_interval,
+           y = median,
+           colour = cell_line,
+           fill   = cell_line,
+           group  = cell_line)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_ribbon(aes(ymin = lower, ymax = upper),
+              alpha = 0.2, colour = NA) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  #geom_line(aes(y = int_enrich), col = "orange") +
+  facet_grid(cell_line ~ ., scales = "free_y") +
+  geom_vline(xintercept = start(CTCF_mm10.chr3),
+             col = "darkgrey", linetype = 'dotted') +
+  geom_vline(xintercept = 34772210,
+             col = 'darkgrey', linetype = "dotted") +
+  # annotate enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown) +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown) +
+  # annotate gene
+  annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red') +
+  geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red') +
+  scale_x_continuous(
+    breaks  = scales::pretty_breaks(n = 6), 
+    labels  = scales::unit_format(scale = 1E-6, accuracy = 0.1, unit = NULL),
+    limits  = range_2Mb,
+    expand=c(0,0)
+  ) +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("enrichment vs 23_34A (ctrl)") +
+  theme_classic() +
+  theme(legend.position = "bottom") +
+  col_scale_MK_CL
+
+pEnrich_lin_CBS_Sox2P
+```
+
+## CBS only
+```{r}
+cl_CBS <-  c("CRE6", "CBS16_16A", "3xCTCF")
+  
+tib_boot <- tib_CBS16_16A_comb %>%
+  filter(
+    population == "ctrl",
+    chr == "chr3",
+    cell_line %in% cl_CBS
+  ) %>%
+  ungroup()
+```
+
+```{r}
+set.seed(456)
+n_boot <- 5000
+all_exp = unique(tib_CBS16_16A_comb$experiment)
+
+boot_enrich_list <- map(seq_len(n_boot), function(bi) {
+  cat("▶ Bootstrap", bi, "\n")
+  
+  # resample integrations with replacement
+  boot_dat <- tib_boot %>%
+  group_by(cell_line) %>%
+  slice_sample(prop = 1, replace = TRUE) %>%
+  ungroup()
+  
+  # enrichment of each cell line vs 23_34A
+  enrich_between_cell_lines_CL(
+    TIB                = boot_dat,
+    REF_CL             = "CRE6",
+    CL                 = cl_CBS,
+    POP                = "ctrl",
+    EXP                = all_exp,
+    binsize            = 2000,
+    N_bins_window      = 10,
+    calculation_window = range_2Mb
+  ) %>%
+    mutate(bootstrap = bi)
+})
+
+# Save object 
+saveRDS(boot_enrich_list, "/DATA/projects/CTCF_Sox2/analysis/Enrichment/ME20260303_enrichment_CL_deltaCBS_vs_CBS_5000boot_2000_10.rds")
+boot_enrich_list = readRDS("/DATA/projects/CTCF_Sox2/analysis/Enrichment/ME20260303_enrichment_CL_deltaCBS_vs_CBS_5000boot_2000_10.rds")
+
+
+boot_enrich_df <- bind_rows(boot_enrich_list)
+
+# sanity check: same number of rows per bootstrap
+boot_enrich_df %>% count(bootstrap)
+
+```
+
+### mask bad windows in the bootsrap, not drop them NAs
+```{r}
+min_ctrl <- 3   
+min_test <- 3
+
+boot_enrich_masked <- boot_enrich_df %>%
+  filter(!is.na(cell_line),
+    cell_line != "CRE6") %>%
+  mutate(
+    int_enrich_masked = if_else(
+      ctrl_counts_window >= min_ctrl &
+      counts_window      >= min_test &
+      is.finite(int_enrich),
+      int_enrich,
+      NA_real_
+    )
+  )
+```
+
+### summarise and keep NA if there is no information in bin
+```{r}
+
+ci_df <- boot_enrich_masked %>%
+  group_by(cell_line, mid_interval) %>%
+  summarize(
+    lower  = if (all(is.na(int_enrich_masked))) NA_real_
+             else quantile(int_enrich_masked, 0.025, na.rm = TRUE),
+    median = if (all(is.na(int_enrich_masked))) NA_real_
+             else quantile(int_enrich_masked, 0.5,   na.rm = TRUE),
+    upper  = if (all(is.na(int_enrich_masked))) NA_real_
+             else quantile(int_enrich_masked, 0.975, na.rm = TRUE),
+    .groups = "drop"
+  )
+```
+
+### make sure all windows exist as rows
+```{r}
+
+all_mids <- sort(unique(boot_enrich_df$mid_interval))
+
+#ci_df only contains those mid_intervals where at leasat one boostrap replicate produced something, make sure to have an NA row for every genomic bin
+ci_df_full <- ci_df %>% 
+  tidyr::complete(cell_line, mid_interval = all_mids)
+
+```
+
+### Figure 6E Plot
+```{r Figure 6E}
+#combine with real data
+tib_try_CBS = enrich_CBS_ctrl_CL_plot %>% select(mid_interval, cell_line, int_enrich)
+tib_comb_CBS = ci_df_full %>% left_join(tib_try_CBS) %>%
+  mutate(cell_line = factor(cell_line, levels = c("CBS16_16A", "3xCTCF")))
+
+pEnrich_lin_CBS_only =
+ggplot(tib_comb_CBS,
+       aes(x = mid_interval,
+           y = median,
+           colour = cell_line,
+           fill   = cell_line,
+           group  = cell_line)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_ribbon(aes(ymin = lower, ymax = upper),
+              alpha = 0.2, colour = NA) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+  #geom_line(aes(y = int_enrich), col = "orange") +
+  facet_grid(cell_line ~ ., scales = "free_y") +
+  #Annotate CTCF sites
+  # geom_vline(xintercept = start(CTCF_mm10.chr3),
+  #            col = 'darkgrey', linetype = 'dotted') +
+  # geom_vline(xintercept = 34772210,
+  #            col = 'darkgrey', linetype = "dotted") +
+  #annotate deWit CTCF sites
+  geom_vline(xintercept = start(CTCF_mm10.chr3_extra),
+             col = 'darkgrey', linetype = 'dotted') +
+  
+  # annotate enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown) +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown) +
+  # annotate gene
+  annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red') +
+  geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red') +
+  scale_x_continuous(
+    breaks  = scales::pretty_breaks(n = 6), 
+    labels  = scales::unit_format(scale = 1E-6, accuracy = 0.1, unit = NULL),
+    limits  = range_2Mb,
+    expand=c(0,0)
+  ) +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("enrichment vs deltaCBS (ctrl)") +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+pEnrich_lin_CBS_only
+```
+
+#### Add CBS as triangles to plot
+```{r}
+# CTCF positions as a tibble
+ctcf_tri_df <- tibble(
+  mid    = (start(CTCF_mm10.chr3) + end(CTCF_mm10.chr3))/2,             # start of motif; or (start+end)/2
+  strand = as.character(strand(CTCF_mm10.chr3))
+) %>%
+  filter(
+    mid >= range_2Mb[1],
+    mid <= range_2Mb[2]
+  )
+
+# CTCF panel data: put everything into the "CTCF" facet, y = 1 (arbitrary)
+ctcf_tri_df <- ctcf_tri_df %>%
+  mutate(
+    cell_line = factor("CTCF", levels = levels(ci_df_full$cell_line)),
+    y         = 1
+  )
+
+#Plot
+pEnrich_lin_CBS_only_CBS_annot =
+ggplot(ci_df_full,
+       aes(x = mid_interval,
+           y = median,
+           colour = cell_line,
+           fill   = cell_line,
+           group  = cell_line)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_ribbon(aes(ymin = lower, ymax = upper),
+              alpha = 0.2, colour = NA) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+
+  ## --- NEW: CTCF orientation track on top ------------------------
+  geom_point(
+    data = ctcf_tri_df,
+    aes(x = mid, y = y, shape = strand),
+    inherit.aes = FALSE,
+    size = 4,
+    colour = "black"
+  ) +
+  # "+" = triangle pointing right, "-" = triangle pointing left
+  scale_shape_manual(values = c("+" = 62, "-" = 60)) +
+  guides(shape = "none") +
+  ## ---------------------------------------------------------------
+
+  facet_grid(cell_line ~ ., scales = "free_y") +
+  # keep your gene / enhancer / extra CTCF vlines if you like,
+  # but you probably don't need the old CTCF vlines anymore:
+   geom_vline(xintercept = start(CTCF_mm10.chr3),
+              col = 'darkgrey', linetype = 'dotted') +
+  geom_vline(xintercept = 34772210,
+             col = 'darkgrey', linetype = "dotted") +
+  # annotate enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown) +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown) +
+  # annotate gene
+  annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red') +
+  geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red') +
+  scale_x_continuous(
+    breaks  = scales::pretty_breaks(n = 6), 
+    labels  = scales::unit_format(scale = 1E-6, accuracy = 0.1, unit = NULL),
+    limits  = range_2Mb,
+    expand=c(0,0)
+  ) +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("enrichment vs deltaCBS (ctrl)") +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+pEnrich_lin_CBS_only_CBS_annot
+
+
+# Arrow annotation
+pEnrich_lin_CBS_only_CBS_annot <-
+  ggplot(ci_df_full,
+         aes(x = mid_interval,
+             y = median,
+             colour = cell_line,
+             fill   = cell_line,
+             group  = cell_line)) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_ribbon(aes(ymin = lower, ymax = upper),
+              alpha = 0.2, colour = NA) +
+  geom_line(linewidth = 0.8, na.rm = TRUE) +
+
+  ## --- NEW: CTCF orientation track with unicode triangles ------
+  geom_text(
+    data = ctcf_tri_df,
+    aes(
+      x = mid,
+      y = y,
+      label = ifelse(strand == "+", "\u25B6", "\u25C0")  # ▶ or ◀
+    ),
+    inherit.aes = FALSE,
+    colour = "black",
+    size = 4
+  ) +
+  ## -------------------------------------------------------------
+
+  facet_grid(cell_line ~ ., scales = "free_y") +
+  geom_vline(xintercept = start(CTCF_mm10.chr3),
+             col = "darkgrey", linetype = "dotted") +
+  geom_vline(xintercept = 34772210,
+             col = "darkgrey", linetype = "dotted") +
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer),
+           ymin = -Inf, ymax = Inf, alpha = .2, fill = brown) +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown) +
+  annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene),
+           ymin = -Inf, ymax = Inf, alpha = .2, fill = "red") +
+  geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = "red") +
+  scale_x_continuous(
+    breaks  = scales::pretty_breaks(n = 6),
+    labels  = scales::unit_format(scale = 1e-6, accuracy = 0.1, unit = NULL),
+    limits  = range_2Mb,
+    expand=c(0,0)
+  ) +
+  xlab("Genomic coordinate (Mb)") +
+  ylab("enrichment vs deltaCBS (ctrl)") +
+  theme_classic() +
+  theme(legend.position = "bottom")
+
+pEnrich_lin_CBS_only_CBS_annot
+
+#ggsave(filename='Enrich_lin_CBS_only_CBS_annot.pdf', plot = pEnrich_lin_CBS_only_CBS_annot,  device=cairo_pdf)
+```
+
+#Plot all together
+```{r}
+#Figure S5F
+pEnrich_lin_CBS_Sox2P
+
+#Figure 6E
+pEnrich_lin_CBS_only
+pEnrich_lin_CBS_only_CBS_annot
+```

@@ -1,0 +1,579 @@
+---
+title: "ME20260304_DelD_E_clones_FACS"
+date: "2024-04-05"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# Method
+We generated and genotyped different deltaCBS-in-SCR and deltaCBS-DS-SCR clones and measured their fluorescence by analytical FACS (Fortessa 1). 
+Here I am loading the FACS data and plot the values. 
+
+#Compatibility problems
+The newer ggplot version is not compatible with the plotting in the ggcyto package, therefore i loaded an older version of ggplot in order to be compatible with the functions of ggcyto.
+```{r}
+# Load older ggplot version that is compatible with the GENOVA package
+.libPaths(c("/DATA/usr/m.eder/R/ggplot2_3x", .libPaths()))
+
+library(ggplot2)
+packageVersion("ggplot2")  # should now show 3.5.1
+```
+
+# Set-up
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+library(dtplyr)
+library(tidyr)
+library(ggbeeswarm)
+#library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+library(plotly)
+library(readxl)
+library(ggpubr)
+library(ggpmisc)
+library(ggridges)
+library(dplyr)
+library(import)
+library(ggh4x)
+library(cowplot)
+import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+#to install this you need to manually install RFOC first:
+#install_url('https://cran.r-project.org/src/contrib/Archive/RFOC/RFOC_3.4-6.tar.gz')
+
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+# Paths & parameters
+```{r paths_parameters}
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_7/analysis_FACS_clones_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+```{r}
+myCols_blue = c('#525252', "#080E5B",  "#212B71", "#3A4987", "#465893", "#5A719A", "#6C8AA0")
+names(myCols_blue) = c("ctrl", paste0("P", 1:6))
+colScale7_blue <- scale_colour_manual(name = "population", values = myCols_blue)
+fillScale7_blue <- scale_fill_manual(name = "population", values = myCols_blue)
+
+myCols_teal = c('#525252', "#004C4C", "#146B6B", "#2C8A8A", "#45AAAA", "#5FC9C9", "#78E8E8")
+names(myCols_teal) = c("ctrl", paste0("P", 1:6))
+colScale7_teal <- scale_colour_manual(name = "population", values = myCols_teal)
+fillScale7_teal <- scale_fill_manual(name = "population", values = myCols_teal)
+
+myCols_red = c('#525252', "#5B0000", "#751919", "#902F2F", "#AA4646", "#C45C5C", "#DE7373")
+names(myCols_red) = c("ctrl", paste0("P", 1:6))
+colScale7_red <- scale_colour_manual(name = "population", values = myCols_red)
+fillScale7_red <- scale_fill_manual(name = "population", values = myCols_red)
+
+# Combine all colors into a single vector
+all_colors = c(myCols_blue, myCols_teal, myCols_red)
+
+# Create the names dynamically for the combined vector
+names(all_colors) = c(paste0("34A_P",1:6), 
+                      paste0("D2_P",1:6), 
+                      paste0("E12_P",1:6))
+
+# Since ctrl is common across all, you may need to add it separately if it's used
+all_colors["ctrl"] = '#525252'
+colScaleAll <- scale_colour_manual(name = "col_name", values = all_colors)
+
+
+# col scheme for cell line (one color per cell line)
+myCols_23_34A = c("#3A4987")
+myCols_23_34A_DelD2 = c('#2C8A8A')
+myCols_23_34A_DelE12 = c("#902F2F")
+
+
+cell_line_col = c(myCols_23_34A, myCols_23_34A_DelD2, myCols_23_34A_DelE12)
+
+names(cell_line_col) = c("23_34A",
+                         "Sox2P_DelD2",
+                         "Sox2P_DelE12")
+                      
+colScaleCell_line <- scale_colour_manual(name = "cell_line", values = cell_line_col)
+fillScaleCell_line <- scale_fill_manual(name = "cell_line", values = cell_line_col)
+``` 
+
+# Load data
+## Load E2254
+```{r load_E2254}
+
+fcs_files_E2254 = dir('/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2254_DelD_DelE/fcs_for_R_timegated',
+                      full.names = T)
+
+fcs_files_E2254_tib = tibble(file = fcs_files_E2254)%>%
+  mutate(sample_name_tmp = split_string(str_remove(file, '.*/'), "_", 2, 9)) %>%
+  mutate(cell_line_tmp = split_string(sample_name_tmp, "_", 2, 4),
+         cell_line_tmp2 = case_when(grepl("DelA", cell_line_tmp) ~ "23_34_DelA",
+                                    grepl("WT", cell_line_tmp) ~ "WT",
+                                    grepl("8_34_8", cell_line_tmp) ~ "8_34",
+                                    grepl("D12", cell_line_tmp) ~ "23_34_D12",
+                                    grepl("D13", cell_line_tmp) ~ "23_34_D13",
+                                    grepl("D2", cell_line_tmp) ~ "23_34_D2",
+                                    grepl("E12", cell_line_tmp) ~ "23_34_E12",
+                                    grepl("F121", cell_line_tmp) ~ "F121",
+                                    grepl("23_34A", cell_line_tmp) ~ "23_34A",
+                                    .default = cell_line_tmp),
+         cell_line = case_when(cell_line_tmp == "23_34_E12" ~ "WT",
+                               cell_line_tmp == "E12_D12_D12" ~ "23_34_E12",
+                               .default = cell_line_tmp2),
+         treatment = "untreated",
+         
+         sample_number = as.numeric(substr(str_extract(sample_name_tmp, "\\d{3}_Time"), 1, 3)),  #regex: 3 digits, followed by _Time, then take the 3 digits
+         genotype = case_when(substr(split_string(sample_name_tmp, "_", 2),1,1) == "D" ~ "delD",
+                              substr(split_string(sample_name_tmp, "_", 2),1,1) == "E" ~ "delE",
+                              sample_number <= 27 ~ "delA",
+                              .default = "WT"),
+         
+         sorted_phenotype = case_when(genotype == "delA" ~ "mCh-_mT+",
+                                      .default = "none"),
+         type = case_when(cell_line %in% c("F121", "WT") ~ "control",
+                          genotype == "untreated" ~ "control",
+                          .default = "clone"),
+         wellID = case_when(type == "clone" & genotype == "delA" ~ split_string(sample_name_tmp, "_", 5, 5)),
+         rownum = case_when(substr(wellID, 1, 1) == "A" ~ 1,
+                            substr(wellID, 1, 1) == "B" ~ 2,
+                            substr(wellID, 1, 1) == "C" ~ 3),
+         colnum = as.numeric(substr(wellID, 2, 3)),
+         clone_number = 12*(rownum - 1) + colnum,
+         clone_name = case_when(
+           genotype %in% c('delD', 'delE') ~ paste0("clone_", split_string(sample_name_tmp, "_", 2)),
+           type == "clone" & genotype == "delA" ~ paste0("clone_A",clone_number),
+           .default = cell_line)) %>%
+  mutate(timepoint = "remeasurement",
+         experiment = "E2254",
+         flowcytometer = "analytical",
+         date = split_string(sample_name_tmp, "_",1)) %>%
+  group_by(cell_line, genotype, clone_name) %>%
+  arrange(sample_number) %>%
+  mutate(techrep = row_number(),
+         sample_name = case_when(type == "clone" & genotype == "delA" ~  paste0(experiment, "_", cell_line, "_", genotype, "_", clone_name),
+                                 type == "clone" & genotype %in% c("delD", "delE") ~  paste0(experiment, "_", cell_line, "_", genotype, "_", clone_name, "_", techrep),
+                                 .default = paste0(experiment, "_", cell_line, "_", genotype, "_", techrep))) %>%
+  select(-c("cell_line_tmp", "cell_line_tmp2"))
+
+```
+
+## Load E2270
+```{r load_E2270}
+fcs_files_E2270 = dir('/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2270_DelD_DelE', 
+                      full.names = T)
+
+fcs_files_E2270_tib = tibble(file = fcs_files_E2270) %>%
+  mutate(sample_name_tmp = split_string(str_remove(file, '.*/'), "_", 4, 10)) %>%
+  mutate(cell_line = case_when(grepl("E12", sample_name_tmp) ~ "23_34_E12",
+                               grepl("D2", sample_name_tmp) ~ "23_34_D2",
+                               grepl("23_34A", sample_name_tmp) ~ "23_34A",
+                               grepl("sort_neg_ctrl", sample_name_tmp) ~ "WT"),
+         
+         treatment = case_when(grepl("UT", sample_name_tmp) ~ "untreated",
+                               grepl("PB", sample_name_tmp) ~ "PB",
+                               grepl("SB", sample_name_tmp) ~ "SB",
+                               grepl("sort_neg_ctrl", sample_name_tmp) ~ "untreated"),
+         
+         genotype = case_when(cell_line == "23_34A" ~ "WT",
+                              cell_line == "23_34_D2" ~ "delD",
+                              cell_line == "23_34_E12" ~ "delE",
+                              .default = "WT"),
+         
+         clone_name = case_when(grepl("D2", cell_line) ~ "clone_D2",
+                                grepl("E12", cell_line) ~ "clone_E12",
+                                grepl("23_34A", cell_line) ~ "23_34A",
+                                .default = genotype),
+         fcs_filter = "mCh+",
+         timepoint = "sort",
+         experiment = "E2270",
+         flowcytometer = "sorter",
+         sample_name = paste0(experiment, "_", cell_line, "_", genotype, "_", treatment),
+         date = "me20230523")
+
+```
+
+## Load E2339
+```{r load_E2339}
+
+fcs_files_E2339= dir("/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2339_DelD_DelE", 
+                      full.names = T)
+
+fcs_files_E2339_tib = tibble(file = fcs_files_E2339) %>%
+  mutate(sample_name_tmp = split_string(str_remove(file, '.*/'), "_", 2, 8)) %>%
+  mutate(cell_line = case_when(grepl("23_34A_ctrl", sample_name_tmp) ~ "23_34A",
+                               grepl("23_DelD", sample_name_tmp) ~ "23_34_D2",
+                               grepl("23_DelE", sample_name_tmp) ~ "23_34_E12",
+                               grepl("F121_ctrl", sample_name_tmp) ~ "F121",
+                               grepl("WT", sample_name_tmp) ~ "WT"),
+         
+          treatment = case_when(grepl("UT", sample_name_tmp) ~ "untreated",
+                               grepl("PB", sample_name_tmp) ~ "PB",
+                               grepl("SB", sample_name_tmp) ~ "SB",
+                               grepl("ctrl", sample_name_tmp) ~ "untreated",
+                               grepl("WT", sample_name_tmp) ~ "untreated"),
+         
+         genotype = case_when(cell_line == "23_34A" ~ "WT",
+                              cell_line == "23_34_D2" ~ "delD",
+                              cell_line == "23_34_E12" ~ "delE",
+                              .default = "WT"),
+         
+         clone_name = case_when(grepl("23_DelD", sample_name_tmp) ~ "clone_D2",
+                                grepl("23_DelE", sample_name_tmp) ~ "clone_E12",
+                                .default = cell_line),
+         fcs_filter = "mCh+",
+         timepoint = "sort",
+         experiment = "E2339",
+         flowcytometer = "sorter",
+         sample_name = paste0(experiment, "_", cell_line, "_", genotype, "_", treatment),
+         date = "me20231024"
+         )
+```
+
+## Combine data
+```{r}
+fcs_files_combined = bind_rows(fcs_files_E2254_tib,
+                 fcs_files_E2270_tib,
+                 fcs_files_E2339_tib) %>%
+  mutate(cell_line = factor(cell_line, c("23_34A", "23_34_DelA", "23_34_D2", "23_34_D12", "23_34_D13", "23_34_E12","8_34", "F121", "WT"))) %>%
+  mutate(treatment = factor(treatment, c('untreated','PB','SB')))
+
+# saveRDS(fcs_files_combined, '/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/Combined_for_paper/CM20240118_Sox2_CRISPR_fcs_files_tib.rds')
+
+#not all channels are in all datasets, subset the ones we need (which are in all sets) so we can load all at once
+flowset_all = read.flowSet(files = fcs_files_combined$file, alter.names = T, truncate_max_range = F, column.pattern = 'BL.B..530_30.A|YG.D..610_20.A|V.F..450_50.A|FSC.A|SSC.A')
+```
+
+
+```{r}
+#add sample names and phenodata
+sampleNames(flowset_all) = fcs_files_combined$sample_name
+pData(flowset_all)$name = fcs_files_combined$sample_name
+pData(flowset_all)$sample_name = fcs_files_combined$sample_name
+
+pheno_data_tib = left_join(pData(flowset_all), fcs_files_combined, join_by(sample_name == sample_name) ) 
+rownames(pheno_data_tib) = fcs_files_combined$sample_name
+
+pData(flowset_all) = pheno_data_tib
+
+#order the fluorophores and rename them
+flowset_fluo = flowset_all[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A', 'FSC.A', 'SSC.A')]
+colnames(flowset_fluo) = c("GFP", "mCherry", "mTurq", 'FSC', 'SSC')
+
+N_cells = sapply(1:length(flowset_fluo), function(i){nrow(flowset_fluo[[i]])})
+pData(flowset_fluo)$N_cells = N_cells
+fcs_files_combined$N_cells = N_cells
+
+rm(flowset_all)
+```
+
+# Setup colour scale
+```{r}
+
+# col scheme for cell line
+myCols_23_34A = c("#3A4987")
+myCols_8 = c("#3A4987")
+myCols_23_34A_DelD2 = c('#45AAAA')
+myCols_23_34A_DelD12 = c('#45AAAA')
+myCols_23_34A_DelD13 = c('#78E8E8')
+myCols_23_34A_DelE12 = c("#902F2F")
+myCols_F121 = c("grey")
+myCols_WT = c("darkgrey")
+
+cell_line_col = c(myCols_23_34A, myCols_8, myCols_23_34A_DelD2, myCols_23_34A_DelD12, myCols_23_34A_DelD13, myCols_23_34A_DelE12,myCols_F121, myCols_WT)
+
+names(cell_line_col) = c("23_34A",
+                         "8_34",
+                         "23_34_D2",
+                         "23_34_D12", 
+                         "23_34_D13",
+                         "23_34_E12",
+                         "F121",
+                         "WT")
+                      
+colScaleCell_line <- scale_colour_manual(name = "cell_line", values = cell_line_col)
+fillScaleCell_line <- scale_fill_manual(name = "cell_line", values = cell_line_col)
+```
+
+# statistics 
+```{r}
+# Calculate median expression
+tib_median = as_tibble(rownames = "name", fsApply(flowset_fluo, each_col, median)) %>%
+  rename(median_mCh = mCherry,
+         median_GFP = GFP,
+         median_mTurq = mTurq) %>%
+  select(-c("FSC", "SSC"))
+
+# Calculate mean expression
+tib_mean = as_tibble(rownames = "name", fsApply(flowset_fluo, each_col, mean)) %>%
+  rename(mean_mCh = mCherry,
+         mean_GFP = GFP,
+         mean_mTurq = mTurq) %>%
+  select(-c("FSC", "SSC"))
+
+# Calculate standard deviation
+tib_std = as_tibble(rownames = "name", fsApply(flowset_fluo, each_col, sd)) %>%
+  rename(std_mCh = mCherry,
+         std_GFP = GFP,
+         std_mTurq = mTurq) %>%
+  select(-c("FSC", "SSC"))
+  
+tib_mean_median_std = tib_median %>% 
+  left_join(tib_mean, by = "name") %>%
+  left_join(tib_std, by = "name") %>%
+  mutate(CV_mCh = std_mCh/mean_mCh, 
+         CV_GFP = std_GFP/mean_GFP,
+         CV_mTurq = std_mTurq/mean_mTurq)
+
+tib_all = pheno_data_tib %>% left_join(tib_mean_median_std, by = "name")
+```
+
+
+# correct and normalize medians
+```{r}
+#subtract autofluorescence
+autofluo_tib_comb = tib_all  %>%
+  filter(cell_line == "WT") %>%
+  group_by(date) %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+           mCherry_WT = mean(median_mCh),
+            GFP_WT = mean(median_GFP) )
+
+#normalize to GFP
+expression_tib_comb = tib_all %>%
+  left_join(autofluo_tib_comb, join_by(date)) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCh - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 23_34A (to compare between measurement days and to compare them in general)
+standard_tib = expression_tib_comb %>%
+  group_by(date, experiment) %>%
+  filter(cell_line == "23_34A" & treatment == "untreated") %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+           mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor) )
+
+expression_tib_comb = expression_tib_comb %>%
+  left_join(standard_tib, join_by(date, experiment)) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+
+
+expression_tib_comb %>% filter(genotype != "delA")  %>%
+  group_by(clone_name) %>%
+  summarize(mean(median_mTurq), mean(mTurq_norm), mean(rel_mTurq))
+```
+
+# For paper
+```{r FACS plot paper}
+#E2254 samples
+E2254_samples = fcs_files_combined %>% 
+  filter(experiment == "E2254" & treatment != "delA" & clone_name %in% c("F121",  "23_34A", "clone_E12", "clone_D2")) %>%
+  pull(sample_name)
+
+# Ridgeline plots D2, E12 with controls
+pRidge_mTurq =
+  ggplot(flowset_fluo[E2254_samples,], aes(x = mTurq, 
+                                           y = factor(cell_line, levels = c("23_34_E12", "23_34_D2","23_34A","F121")), 
+                                           fill = cell_line)) + #, col = as_factor(sort2))) + 
+  geom_density_ridges(size =0.5, # rel_min_height  = 0.005,
+                      # scale = 2,
+                      # alpha = 0.75,
+                      quantile_lines = TRUE, quantiles = 2) +
+  ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  
+  theme_bw() +
+  ggtitle("mTurq")+
+  fillScaleCell_line  +
+  theme(legend.position = "none",
+        axis.title.y = element_blank())
+
+pRidge_mTurq
+
+pRidge_GFP =
+  ggplot(flowset_fluo[E2254_samples,], aes(x = GFP,
+                                           y = factor(cell_line, levels = c("23_34_E12", "23_34_D2","23_34A","F121")), 
+                                           fill = cell_line)) + #, col = as_factor(sort2))) + 
+  #geom_density_ridges() +
+  geom_density_ridges(size =0.5, # rel_min_height  = 0.005,
+                      # scale = 2,
+                      # alpha = 0.75,
+                      quantile_lines = TRUE, quantiles = 2) +
+  ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  ggtitle("Sox2::GFP")+
+  fillScaleCell_line  +
+  theme(legend.position = "none",
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+pRidge_GFP
+
+pRidge_mCherry =
+  ggplot(flowset_fluo[E2254_samples,], aes(x = mCherry, 
+                                           y = factor(cell_line, levels = c("23_34_E12", "23_34_D2","23_34A","F121")), 
+                                           fill = cell_line)) + #, col = as_factor(sort2))) + 
+  geom_density_ridges(size =0.5, # rel_min_height  = 0.005,
+                      # scale = 2,
+                      # alpha = 0.75,
+                      quantile_lines = TRUE, quantiles = 2) +
+  ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  ggtitle("Sox2::mCherry")+
+  fillScaleCell_line  +
+  theme(legend.position = "none",
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+pRidge_mCherry
+
+plot_grid(pRidge_mTurq, pRidge_GFP, pRidge_mCherry, nrow = 1, axis = "lr", align = "v")
+```
+
+## How much of an reduction
+```{r}
+expression_tib_comb %>% filter(experiment == "E2254" & genotype != "delA") %>%
+  group_by(cell_line) %>%
+  summarise(mean_rel_mT = mean(rel_mTurq),
+            mean_rel_mCh = mean(rel_mCherry))
+
+expression_tib_comb %>% filter(experiment == "E2254" & genotype != "delA") %>%
+  group_by(cell_line) %>%
+  summarise(mean_rel_mT = mean(rel_mTurq),
+            mean_rel_mCh = mean(rel_mCherry)) %>%
+  filter(cell_line != "WT" & cell_line != "8_34") %>%
+  ggplot(aes(x = factor(cell_line, levels = c("F121", "23_34A", "23_34_D2", "23_34_D12", "23_34_D13", "23_34_E12")), 
+             y = mean_rel_mT, fill = cell_line)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") +
+  geom_jitter(data = expression_tib_comb %>% filter(experiment == "E2254" & genotype != "delA" & cell_line != "WT" & cell_line != "8_34"), 
+             aes(x = cell_line, y = rel_mTurq, col = cell_line), size = 2) +
+  theme_bw() +
+  ggtitle("Relative reporter expression", subtitle = "autofluo cor & norm to 23_34A") +
+  fillScaleCell_line  +
+  colScaleCell_line + 
+  theme(legend.position = "none")
+
+
+expression_tib_comb %>% filter(experiment == "E2254" & genotype != "delA") %>%
+  group_by(cell_line) %>%
+  summarise(mean_rel_mT = mean(rel_mTurq),
+            mean_rel_mCh = mean(rel_mCherry)) %>%
+  filter(cell_line != "WT" & cell_line != "8_34") %>%
+  ggplot(aes(x = factor(cell_line, levels = c("F121", "23_34A", "23_34_D2", "23_34_D12", "23_34_D13", "23_34_E12")), 
+             y = mean_rel_mCh, fill = cell_line)) +
+  geom_bar(stat = "identity", position = "dodge", alpha = 0.8) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") +
+  geom_jitter(data = expression_tib_comb %>% filter(experiment == "E2254" & genotype != "delA" & cell_line != "WT" & cell_line != "8_34"), 
+             aes(x = cell_line, y = rel_mCherry, col = cell_line), size = 2) +
+  theme_bw() +
+  ggtitle("Relative Sox2::mCherry expression", subtitle = "autofluo cor & norm to 23_34A")+
+  fillScaleCell_line  +
+  colScaleCell_line + 
+  theme(legend.position = "none")
+        
+```
+
+
+## Supplementary plot
+```{r supplementary plot}
+
+E2254_samples_clone = fcs_files_combined %>% 
+  filter(experiment == "E2254" & treatment != "delA" & cell_line %in% c("F121",  "23_34A", "23_34_D2", "23_34_D12", "23_34_D13", "23_34_E12")) %>%
+  pull(sample_name)
+
+
+# Ridgeline plots D2, E12 with controls
+pRidge_mTurq =
+  ggplot(flowset_fluo[E2254_samples_clone,], aes(x = mTurq, 
+                                                 y = factor(cell_line, levels = c("23_34_E12", "23_34_D13", "23_34_D12","23_34_D2","23_34A","F121")), 
+                                                 fill = cell_line)) + 
+  #geom_density_ridges() +
+  stat_density_ridges(size =0.5, # rel_min_height  = 0.005,
+                      quantile_lines = TRUE, quantiles = 2) +
+  ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  ggtitle("mTurq")+
+  fillScaleCell_line  +
+  theme(legend.position = "none",
+        axis.title.y = element_blank())
+
+pRidge_GFP =
+  ggplot(flowset_fluo[E2254_samples_clone,], aes(x = GFP,  
+                                                 y = factor(cell_line, levels = c("23_34_E12", "23_34_D13", "23_34_D12","23_34_D2","23_34A","F121")), 
+                                                 fill = cell_line)) + #, col = as_factor(sort2))) + 
+  #geom_density_ridges() +
+  stat_density_ridges(size =0.5, # rel_min_height  = 0.005,
+                      quantile_lines = TRUE, quantiles = 2) +
+  ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  ggtitle("Sox2::GFP")+
+  fillScaleCell_line  +
+  theme(legend.position = "none",
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+
+pRidge_mCherry =
+  ggplot(flowset_fluo[E2254_samples_clone,], aes(x = mCherry,  
+                                                 y = factor(cell_line, levels = c("23_34_E12", "23_34_D13", "23_34_D12","23_34_D2","23_34A","F121")), 
+                                                 fill = cell_line)) + #, col = as_factor(sort2))) + 
+  #geom_density_ridges() +
+  stat_density_ridges(size =0.5, # rel_min_height  = 0.005,
+                      quantile_lines = TRUE, quantiles = 2) +
+  ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  ggtitle("Sox2::mCherry")+
+  fillScaleCell_line  +
+  theme(legend.position = "none",
+        axis.text.y = element_blank(),
+        axis.title.y = element_blank())
+
+plot_grid(pRidge_mTurq, pRidge_GFP, pRidge_mCherry, nrow = 1, axis = "lr", align = "v")
+```
+
+
+

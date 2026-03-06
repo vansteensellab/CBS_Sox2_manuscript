@@ -1,0 +1,130 @@
+---
+title:  "CM20230406_E2227_genotype_clones"
+author: "Christine Moene"
+date: "`r format(Sys.time(), '%Y-%m-%d')`"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: inline
+---
+# Goal
+I sequenced amplicons around the CTCF sites for Del D and E clones.
+I used a little snakemake pipeline to extract and count the sequences inbetween the primers. For now I count unique sequences (and not grouped by starcode), because the real difference between the two alleles might only be one or two bp.
+
+Here I will try to determine which sequences are wildtype and which are (useable) mutations.
+
+
+## Set-up
+Load the libraries and set the parameters.
+
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+library(plotly)
+library(readxl)
+library(ggpubr)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+```{r paths_parameters}
+#datatag
+datetag = paste0("CM",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2227_genotyping_CTCF_deletion_clones/analysis_E2227_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+# Load the data
+```{r}
+StarcodeDataDir <- "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2227_genotyping_CTCF_deletion_clones/snakemake_output/starcode/"
+
+# List all files
+metadata_starcode <- tibble(file = dir(StarcodeDataDir, 
+                   recursive = T, full.names = T)) %>%
+  # filter(grepl("insertions_ref", file)) %>%
+  mutate(sample = str_remove(basename(file), "\\..*")) %>%
+  filter(grepl("starcode0_sequences", file))
+
+# Load all files
+starcode_tib <- bind_rows(lapply(1:nrow(metadata_starcode),
+                                 function(i) {
+                                   tmp <- read_tsv(metadata_starcode$file[i],
+                                                   col_names = c("sequence","count","alternative_seq"),
+                                                   col_types = cols(
+                                                     .default = col_character(),
+                                                     sequence = col_character(),
+                                                     alternative_seq = col_character(),
+                                                     count = col_double())) %>%
+                                     mutate(sample = metadata_starcode$sample[i],
+                                       clone_type = split_string(sample,"_",1))
+                                   # mutate(pool_number = as.numeric(substr(pool, 2, length(pool))))
+                                 }))
+# saveRDS(starcode_tib, "CM20230406_E2227_all_sequences_starcode0.tib")
+
+
+```
+
+Immediately filter for the top 5 sequences per sample, and remove the 'alternative_seq' column (is identical to the 'sequence' column), to make the tibble smaller (more manageable)
+```{r}
+starcode_tib2 = starcode_tib %>%
+  select(sequence, count, sample, clone_type) %>%
+  group_by(sample) %>%
+  slice_max(order_by = count, n = 5, with_ties = F)
+
+top_sequences_D_tib = starcode_tib2 %>%
+  filter(clone_type == "DelD") %>%
+  slice_max(order_by = count, n = 3, with_ties = F) %>%
+  mutate(fasta_name = paste0(sample,"_",count,"reads"))
+  
+top_sequences_E_tib = starcode_tib2 %>%
+  filter(clone_type == "DelE") %>%
+  slice_max(order_by = count, n = 3, with_ties = F) %>%
+  mutate(fasta_name = paste0(sample,"_",count,"reads"))
+ 
+top_sequences_D = DNAStringSet(top_sequences_D_tib$sequence)
+names(top_sequences_D) = top_sequences_D_tib$fasta_name
+top_sequences_E = DNAStringSet(top_sequences_E_tib$sequence)
+names(top_sequences_E) = top_sequences_E_tib$fasta_name
+
+writeXStringSet(top_sequences_D, "CM20230406_E2227_top_sequences_D.fasta")
+writeXStringSet(top_sequences_E, "CM20230406_E2227_top_sequences_E.fasta")
+
+```

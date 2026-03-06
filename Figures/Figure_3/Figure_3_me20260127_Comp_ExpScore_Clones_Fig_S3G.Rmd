@@ -1,0 +1,834 @@
+---
+title: "me20251125_Comp_clonal_vs_ExpScore_Figure_S3G"
+author: "Mathias"
+date: "2025-11-25"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# To-do
+- load stranded expression scores
+- load clonal data
+
+# Setup 
+## Libraries
+```{r}
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+library(dplyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+# library(plotly)
+library(readxl)
+library(ggpubr)
+library(ggpmisc)
+library(ggridges)
+library(import)
+library(ggh4x)
+# library(flowCore)
+import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+library(cowplot)
+
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+## Paths & parameters
+```{r paths_parameters}
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+
+## Color scheme
+```{r}
+
+myCols_insert_cell_lines <- c(
+  `MK01` = '#1b9e77',   # Teal green
+  `MK02` = '#d95f02',   # Strong orange
+  `MK03` = '#7570b3',   # Purple
+  `23_34A` = 'black', # 
+  `8_34_8` = 'black', # 
+  `WT` = 'black'        # Black for wild type
+)
+
+col_scale_MK_cl <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_cell_lines,
+  aesthetics = c("colour", "fill")
+)
+
+
+## SCR
+brown = "#ffb000"
+```
+
+## Load functions
+```{r load functions}
+source("/DATA/projects/Sox2/General_functions/CM20240621_general_plotting_functions.R")
+source("/DATA/projects/Sox2/General_functions/CM20250318_new_expression_score_functions.R")
+source("/DATA/projects/CTCF_Sox2/functions/ME20250707_mCh_new_expression_score_functions.R")
+
+```
+
+## Relevant annotations
+```{r element_coordinates}
+
+# Location of enhancer / gene
+enhancer <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34753415,
+                                     end = 34766401),
+                    strand = "*")
+
+# SCR sequence used by Luca Giorgetti study
+enhancer_giorgetti <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34757649,
+                                     end = 34762535),
+                    strand = "*")
+
+#gene based on mm10, ucsc browser, RefSeq annotation
+# Sox2
+# chr3:34649995-34652461 (+)
+# id = NM_011443.4
+
+Sox2_gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34649995,
+                                     end = 34652461),
+                    strand = "+")
+
+#the old gene annotation, did not include the 5' UTR (so from start codon to end of 3' UTR)
+gene_old <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34650405,
+                                     end = 34652461),
+                    strand = "+")
+
+
+landingPad_23 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34643960,
+                                     end = 34643962),
+                    strand = "+")
+
+landingPad_8 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34721183,
+                                     end = 34721184),
+                    strand = "+")
+
+
+LP_tib = tibble(landing_pad = c("LP23", "LP8"), 
+                start = c( start(landingPad_23),start(landingPad_8)))
+
+#CTCF sites based on our own mapping
+# new analysis (based on mapping to mm10 only)
+CTCF_mm10_new <- import.bed('/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed')
+
+#filtering:
+CTCF_mm10.chr3 <- CTCF_mm10_new[seqnames(CTCF_mm10_new)== 'chr3']
+# add the missing site after the SCR
+CTCF_mm10.chr3_extra = sort(c(CTCF_mm10.chr3,
+                         GRanges(seqnames = "chr3",
+                                 IRanges(start = 34772210, end = 34772210),
+                                 strand = "+")),
+                         ignore.strand = T)
+
+
+prange_zoom = c(34500000 , 35000000)
+prange2 = c(34000000, 35500000)
+prange_far = c(32000000, 37000000)
+#zoom in on only the SCR +- 50kb
+prange_LP = c(start(landingPad_23)-5E4, end(landingPad_23)+5E4)
+prange_SCR = c(start(enhancer)-5E4, end(enhancer)+5E4)
+prange_plot = c(32643960, 36643960) #+/- 2MB from landing pad
+prange_loop = c(34631804, 34778268)
+prange_zoom = c(34.5E6, 35E6)
+prange_zoom_paper = c(34.59E6, 34.83E6)
+prange_SCR = c(34.725E6, 34.785E6)
+```
+
+# Load stranded expression score 
+Stranded expression score was calculated with a binzise of 2000bp and 10 bins per window = 20kb with 1000 boostraps and a minimum of 3 integrations per window. 
+
+## Cell line 23_34A
+```{r}
+# Read the integration files
+tib_filtered_FACS_vals_comb = readRDS("/DATA/projects/CTCF_Sox2/analysis/RDS_files/tib_filtered_FACS_vals_comb.rds")
+
+#all_exp
+all_exp = unique(tib_filtered_FACS_vals_comb$experiment)
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 2000
+
+expr_score_tib_23_34A_str = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_34A_str.rds")
+
+expr_score_sum_tib_23_34A_str = bootstrap_summary_fun_str(expr_score_tib_23_34A_str,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_34A_str =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_34A",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_34A_str = left_join(expr_score_sum_tib_23_34A_str,  expr_score_real_23_34A_str) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+
+```
+## Cell line MK01
+```{r}
+expr_score_tib_23_MK01_C5_str = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK01_C5_str.rds")
+
+expr_score_sum_tib_23_MK01_C5 = bootstrap_summary_fun_str(expr_score_tib_23_MK01_C5_str,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK01_C5 =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK01_C5",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK01_C5_str = left_join(expr_score_sum_tib_23_MK01_C5,  expr_score_real_23_MK01_C5) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+## Cell line MK02
+```{r}
+expr_score_tib_23_MK02_C2_str = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK02_C2_str.rds")
+
+
+
+expr_score_sum_tib_23_MK02_C2 = bootstrap_summary_fun_str(expr_score_tib_23_MK02_C2_str,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK02_C2_str =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK02_C2",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK02_C2_str = left_join(expr_score_sum_tib_23_MK02_C2,  expr_score_real_23_MK02_C2_str) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+##Cell line MK03
+```{r}
+
+expr_score_tib_23_MK03_C1 = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK03_C1_stranded.rds")
+
+expr_score_sum_tib_23_MK03_C1 = bootstrap_summary_fun_str(expr_score_tib_23_MK03_C1,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK03_C1_str =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK03_C1",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK03_C1_str = left_join(expr_score_sum_tib_23_MK03_C1,  expr_score_real_23_MK03_C1_str) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+
+
+# Load clonal data
+## Load FCS files
+```{r}
+path_fcs_files_E2252 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2252"
+
+fcs_files_E2252 = dir(path_fcs_files_E2252, full.names = T)
+fcs_files_E2252_nms = str_remove(fcs_files_E2252, "^.*/")
+
+fcs_files_E2252_nms2 = split_string(fcs_files_E2252_nms, "_", 6, 8)
+names(fcs_files_E2252) = fcs_files_E2252_nms2
+
+flowset_E2252 = read.flowSet(files = fcs_files_E2252, alter.names = T, truncate_max_range = F)
+sampleNames(flowset_E2252) = names(fcs_files_E2252)
+pData(flowset_E2252)$name = names(fcs_files_E2252)
+
+
+flowset_fluo_E2252 = flowset_E2252[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A', 'FSC.A', 'SSC.A')]
+colnames(flowset_fluo_E2252) = c("GFP", "mCherry", "mTurq", 'FSC', 'SSC')
+```
+
+## Annotation
+```{r}
+tib_annot_E2252 = tibble(sample_name = names(fcs_files_E2252)) %>%
+  mutate(cell_line = case_when(grepl("_MK1", sample_name) ~ "MK01",
+                               grepl("_MK2", sample_name) ~ "MK02",
+                               grepl("_MK3", sample_name) ~ "MK03",
+                               grepl("23_34A", sample_name) ~ "23_34A",
+                               grepl("8_34_8", sample_name) ~ "8_34_8",
+                               grepl("F121_9_002", sample_name) ~ "F121",
+                               grepl("WT", sample_name) ~ "WT"),
+         landing_pad_location = case_when(grepl("23_", sample_name) ~ "LP -116 kb",
+                                          grepl("8_", sample_name) ~ "LP -39 kb",
+                                          .default = "none"),
+         LP_CL = paste0(cell_line, "_", landing_pad_location),
+         clone_tmp = split_string(sample_name, "_", 3),
+         clone = case_when(clone_tmp == "003" ~ "34A",
+                           clone_tmp == "002" ~ "ctrl",
+                           clone_tmp == "Single Cells.fcs" ~ "ctrl",
+                           .default = clone_tmp),
+         insert_name = case_when(cell_line == "MK01" ~ "CBS3x_Fw_Sox2P",
+                                 cell_line == "MK02" ~ "CBS3x_Rv_Sox2P",
+                                 cell_line == "MK03" ~ "CBS1x_Fw_Sox2P",
+                                 cell_line == "23_34A" ~ "Sox2P",
+                                 cell_line == "8_34_8" ~ "Sox2P",
+                                 cell_line == "F121" ~ "none",
+                                 .default = cell_line),
+          experiment = "E2252") %>%
+  select(-clone_tmp)
+
+
+pheno_data_tib_E2252 = left_join(pData(flowset_fluo_E2252), tib_annot_E2252, join_by(name == sample_name) ) 
+rownames(pheno_data_tib_E2252) = pheno_data_tib_E2252$name
+
+pData(flowset_fluo_E2252) = pheno_data_tib_E2252
+```
+
+## Calculate expression
+```{r}
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2252, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+median_mTurq = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2252)
+
+median_mCherry = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2252)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2252)
+
+flowCore::pData(flowset_fluo_E2252)$median_mTurq = median_mTurq
+flowCore::pData(flowset_fluo_E2252)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2252)$median_GFP = median_GFP
+
+flowCore::pData(flowset_fluo_E2252)$total_cell_count = total_cell_count
+
+fcs_tib = tibble(flowCore::pData(flowset_fluo_E2252))
+```
+
+## Normalize expression
+```{r}
+#subtract autofluorescence, normalize to GFP
+autofluo_tib_comb = fcs_tib  %>%
+  filter(cell_line == "WT") %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+           mCherry_WT = mean(median_mCherry),
+            GFP_WT = mean(median_GFP) )
+
+expression_tib_comb = fcs_tib %>%
+  bind_cols(autofluo_tib_comb) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 23_34A (to compare between measurement days)
+standard_tib = expression_tib_comb %>%
+  filter(cell_line == "23_34A") %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+           mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor) )
+
+expression_tib_comb = expression_tib_comb %>%
+  bind_cols(standard_tib) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+
+stat_table = 
+expression_tib_comb %>% 
+  group_by(cell_line, landing_pad_location) %>% 
+  summarise(mean_mCh = mean(rel_mCherry),
+            mean_mTurq = mean(rel_mTurq))
+```
+
+## Plot clones
+```{r}
+# clones have been FACS measured and insert genotyped 
+
+filter(expression_tib_comb, total_cell_count >= 500 & landing_pad_location != "none") %>%
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  #geom_boxplot(outlier.shape = NA) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line
+  stat_summary(fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+```
+
+```{r}
+# Relative mCherry
+filter(expression_tib_comb, total_cell_count >= 500 & landing_pad_location != "none") %>%
+  #plotting
+  ggplot(aes(x = LP_CL, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line 
+  stat_summary(fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black",  
+               aes(y = rel_mCherry), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E2252") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+```
+
+# Compare Expression score with clonal data
+```{r}
+# filter expression score for bins overlapping LP39
+lp_pos <- start(landingPad_8)[1]   # 34721183
+
+bin_row <- expr_score_tib_23_34A_str %>%
+  filter(cell_line == "23_34A", strand == "+") %>%      # optional filters
+  mutate(bin_end = start_interval + 2 * (mid_interval - start_interval) - 1) %>%
+  filter(start_interval <= lp_pos, bin_end >= lp_pos)
+
+bin_row
+```
+
+## Comparison of calculated expression score with clonal data
+Overlap is plus strand specific, matching the orientation of the inserts in the clones
+```{r}
+#combine all the data
+expr_score_real_23_34A_str
+expr_score_real_23_MK01_C5
+expr_score_real_23_MK02_C2_str
+expr_score_real_23_MK03_C1_str
+
+tib_comb_str = bind_rows(expr_score_real_23_34A_str, expr_score_real_23_MK01_C5, expr_score_real_23_MK02_C2_str, expr_score_real_23_MK03_C1_str)
+
+# 1) Add bin_end and drop rows with NA coordinates / strand
+expr_with_end <- tib_comb_str %>%
+  mutate(
+    bin_end = start_interval + 2 * (mid_interval - start_interval) - 1
+  ) %>%
+  # keep only rows where the bin is defined
+  tidyr::drop_na(start_interval, bin_end, strand) %>%
+  ungroup()
+
+# (Optional) check you cleaned it
+colSums(is.na(expr_with_end[c("start_interval", "bin_end", "strand")]))
+
+# 2) Turn bins into GRanges
+bins_gr <- GRanges(
+  seqnames = Rle("chr3"),  # or expr_with_end$seqnames if you have that column
+  ranges   = IRanges(
+    start = expr_with_end$start_interval,
+    end   = expr_with_end$bin_end
+  ),
+  strand   = Rle(expr_with_end$strand)
+)
+
+all_lps <- c(landingPad_8, landingPad_23)
+names(all_lps) <- c("landingPad_8", "landingPad_23")
+
+hits <- findOverlaps(all_lps, bins_gr)
+
+bins_for_lps <- expr_with_end[subjectHits(hits), ] %>%
+  mutate(landing_pad = names(all_lps)[queryHits(hits)])
+
+bins_for_lps
+
+
+# plot real calculated exp score
+bins_for_lps %>% 
+  ggplot(aes(x = interval_number, y = expr_score, col = cell_line)) +
+  geom_point()
+
+bins_for_lps %>% 
+  ggplot(aes(x = interval_number, y = expr_score_window, col = cell_line)) +
+  geom_point()
+
+
+
+
+bins_for_lps_ctrl = 
+bins_for_lps %>% select(cell_line, landing_pad, expr_score_window) %>% 
+  filter(cell_line == "23_34A") %>%
+  group_by(landing_pad) %>%
+  mutate(expr_score_ctrl = mean(expr_score_window)) %>%
+  select(expr_score_ctrl)
+
+tib_expr_score_real_enrich = 
+bins_for_lps %>% 
+  select(cell_line, landing_pad, expr_score_window) %>% 
+  left_join(bins_for_lps_ctrl, join_by(landing_pad)) %>% 
+  mutate(enrich = expr_score_window /expr_score_ctrl)
+
+pExpr_score_enrich = 
+  tib_expr_score_real_enrich %>% 
+  ggplot(aes(x = landing_pad, y = enrich, col = cell_line)) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") +
+  theme_bw()
+
+pExpr_score_enrich
+
+ 
+ 
+# plot together
+#--> first normalize clones to each LP
+#normalize to 23_34A per LP
+expression_tib_comb = fcs_tib %>%
+  bind_cols(autofluo_tib_comb) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+
+standard_tib_LP = expression_tib_comb %>%
+  filter(insert_name == "Sox2P") %>%
+  group_by(landing_pad_location) %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+           mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor) )
+
+expression_tib_comb_2 = expression_tib_comb %>%
+  left_join(standard_tib_LP, join_by(landing_pad_location)) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+
+
+tib_clones = expression_tib_comb_2 %>% select(cell_line, insert_name, clone, landing_pad_location, rel_mTurq) %>%
+  mutate(landing_pad = case_when(landing_pad_location == "LP -116 kb" ~ "landingPad_23",
+                                 landing_pad_location == "LP -39 kb" ~ "landingPad_8"),
+         exp_type = "clones") %>% select(landing_pad, insert_name, rel_mTurq, exp_type)
+  
+
+tib_exp_score = tib_expr_score_real_enrich %>% mutate(insert_name = case_when(cell_line == "23_34A" ~ "Sox2P",
+                                                                         cell_line == "23_MK01_C5" ~ "CBS3x_Fw_Sox2P",
+                                                                         cell_line == "23_MK02_C2" ~ "CBS3x_Rv_Sox2P",
+                                                                         cell_line == "23_MK03_C1" ~ "CBS1x_Fw_Sox2P"),
+                                                      rel_mTurq = enrich,
+                                                      exp_type = "expr_score") %>% select(landing_pad, insert_name, rel_mTurq, exp_type)
+
+# Plot combined data
+tib_comb = rbind(tib_clones, tib_exp_score) %>% mutate(insert_name = factor(insert_name, levels = c("none", "WT", "Sox2P", "CBS1x_Fw_Sox2P", "CBS3x_Fw_Sox2P", "CBS3x_Rv_Sox2P")))
+
+
+
+tib_comb %>% drop_na() %>%
+  ggplot(aes(x = exp_type, y = rel_mTurq, col = exp_type)) +
+  facet_nested(~ landing_pad + insert_name) +
+  geom_point(width = 0.2, size = 2) +
+  # add mean line
+  stat_summary(data = tib_comb %>% filter(exp_type == "clones") %>% drop_na(),
+    fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 1) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") + 
+  theme_bw()
+
+
+tib_comb %>% drop_na() %>%
+  ggplot(aes(x = exp_type, y = rel_mTurq, col = exp_type)) +
+  facet_nested(landing_pad ~ insert_name, scales = "free_y") +
+  geom_point(width = 0.2, size = 2) +
+  # add mean line
+  stat_summary(data = tib_comb %>% filter(exp_type == "clones") %>% drop_na(),
+    fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 1) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") + 
+  theme_bw()
+
+
+# Plot for paper with real enrichment
+pLP23_real = 
+tib_comb %>% drop_na() %>%
+  filter(landing_pad == "landingPad_23") %>%
+  ggplot(aes(x = exp_type, y = rel_mTurq, col = exp_type)) +
+  facet_nested(~ landing_pad + insert_name) +
+  geom_point(width = 0.2, size = 3, alpha = 0.6) +
+  # add mean line
+  stat_summary(data = tib_comb %>% filter(exp_type == "clones" & landing_pad == "landingPad_23") %>% drop_na(),
+    fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 1) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "none") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+pLP23_real
+
+pLP8_real = 
+tib_comb %>% drop_na() %>%
+  filter(landing_pad == "landingPad_8") %>%
+  ggplot(aes(x = exp_type, y = rel_mTurq, col = exp_type)) +
+  facet_nested(~ landing_pad + insert_name) +
+  geom_point(width = 0.2, size = 3, alpha = 0.6) +
+  # add mean line
+  stat_summary(data = tib_comb %>% filter(exp_type == "clones" & landing_pad == "landingPad_8") %>% drop_na(),
+    fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 1) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "bottom")
+
+pLP8_real
+
+plot_grid(pLP23_real, pLP8_real, ncol = 1, align = "v", rel_heights = c(0.55, 1))
+```
+
+## Comparison of bootstrapped expression score with clonal data
+```{r}
+# This are bootsrapped tibbles with upper and lower CI
+expr_score_sum_tib_filt_comb_23_34A_str
+expr_score_sum_tib_filt_comb_23_MK01_C5_str
+expr_score_sum_tib_filt_comb_23_MK02_C2_str
+expr_score_sum_tib_filt_comb_23_MK03_C1_str
+
+tib_comb_str_boot = bind_rows(expr_score_sum_tib_filt_comb_23_34A_str, expr_score_sum_tib_filt_comb_23_MK01_C5_str, expr_score_sum_tib_filt_comb_23_MK02_C2_str, expr_score_sum_tib_filt_comb_23_MK03_C1_str)
+
+# 1) Add bin_end and drop rows with NA coordinates / strand
+expr_with_end <- tib_comb_str_boot %>%
+  mutate(
+    bin_end = start_interval + 2 * (mid_interval - start_interval) - 1
+  ) %>%
+  # keep only rows where the bin is defined
+  tidyr::drop_na(start_interval, bin_end, strand)
+
+# (Optional) check you cleaned it
+colSums(is.na(expr_with_end[c("start_interval", "bin_end", "strand")]))
+
+# 2) Turn bins into GRanges
+bins_gr <- GRanges(
+  seqnames = Rle("chr3"),  # or expr_with_end$seqnames if you have that column
+  ranges   = IRanges(
+    start = expr_with_end$start_interval,
+    end   = expr_with_end$bin_end
+  ),
+  strand   = Rle(expr_with_end$strand)
+)
+
+all_lps <- c(landingPad_8, landingPad_23)
+names(all_lps) <- c("landingPad_8", "landingPad_23")
+
+hits <- findOverlaps(all_lps, bins_gr)
+
+bins_for_lps <- expr_with_end[subjectHits(hits), ] 
+
+bins_for_lps =
+bins_for_lps %>%
+  mutate(landing_pad = case_when(interval_number == "72" ~ "landingPad_23",
+                                 interval_number == "111" ~ "landingPad_8"))
+
+bins_for_lps
+
+bins_for_lps %>% 
+  ggplot(aes(x = interval_number, y = expr_score_window, col = cell_line)) +
+  geom_point()
+
+bins_for_lps_ctrl = 
+bins_for_lps %>% select(cell_line, landing_pad, expr_score_window_median_sel) %>% 
+  filter(cell_line == "23_34A") %>%
+  group_by(landing_pad) %>%
+  mutate(expr_score_ctrl = mean(expr_score_window_median_sel)) %>%
+  select(expr_score_ctrl)
+
+tib_bins_for_lps_boots =
+  bins_for_lps %>% 
+  select(cell_line, landing_pad, expr_score_window_median_sel) %>% 
+  left_join(bins_for_lps_ctrl, join_by(landing_pad)) %>% 
+  #bind_cols(bins_for_lps_ctrl) %>%
+  mutate(rel_mTurq = expr_score_window_median_sel /expr_score_ctrl)
+
+
+tib_bins_for_lps_boots %>% 
+  ggplot(aes(x = landing_pad, y = rel_mTurq, col = cell_line)) +
+  geom_point(size = 2) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") +
+  theme_bw()
+
+
+#combine bootstrapped with other table
+tib_bins_for_lps_boots = tib_bins_for_lps_boots %>% ungroup() %>% select(landing_pad, rel_mTurq, cell_line) %>% 
+  mutate(insert_name = case_when(cell_line == "23_34A" ~ "Sox2P",
+                          cell_line == "23_MK01_C5" ~ "CBS3x_Fw_Sox2P",
+                          cell_line == "23_MK02_C2" ~ "CBS3x_Rv_Sox2P",
+                          cell_line == "23_MK03_C1" ~ "CBS1x_Fw_Sox2P"),
+         exp_type = "expr_score_boots") %>% 
+  select(landing_pad, insert_name, rel_mTurq, exp_type)
+
+
+tib_comb_2 = rbind(tib_comb, tib_bins_for_lps_boots) %>% mutate(insert_name = factor(insert_name, levels = c("none", "WT", "Sox2P", "CBS1x_Fw_Sox2P", "CBS3x_Fw_Sox2P", "CBS3x_Rv_Sox2P")))
+
+tib_comb_2 %>% drop_na() %>%
+  ggplot(aes(x = exp_type, y = rel_mTurq, col = exp_type)) +
+  facet_nested(~ landing_pad + insert_name) +
+  geom_point(width = 0.2, size = 2) +
+  # add mean line
+  stat_summary(data = tib_comb_2 %>% filter(exp_type == "clones") %>% drop_na(),
+    fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 1) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1))
+
+# Plot for paper
+pLP23 = 
+tib_comb_2 %>% drop_na() %>%
+  filter(exp_type != "expr_score" & landing_pad == "landingPad_23") %>%
+  ggplot(aes(x = exp_type, y = rel_mTurq, col = exp_type)) +
+  facet_nested(~ landing_pad + insert_name) +
+  geom_point(width = 0.2, size = 3, alpha = 0.6) +
+  # add mean line
+  stat_summary(data = tib_comb_2 %>% filter(exp_type == "clones" & landing_pad == "landingPad_23") %>% drop_na(),
+    fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 1) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "none") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+pLP23
+
+pLP8 = 
+tib_comb_2 %>% drop_na() %>%
+  filter(exp_type != "expr_score" & landing_pad == "landingPad_8") %>%
+  ggplot(aes(x = exp_type, y = rel_mTurq, col = exp_type)) +
+  facet_nested(~ landing_pad + insert_name) +
+  geom_point(width = 0.2, size = 3, alpha = 0.6) +
+  # add mean line
+  stat_summary(data = tib_comb_2 %>% filter(exp_type == "clones" & landing_pad == "landingPad_8") %>% drop_na(),
+    fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black", 
+               aes(y = rel_mTurq), fatten = 1) +
+  geom_hline(yintercept = 1, col = "black", linetype = "dotted") + 
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)) +
+  theme(legend.position = "bottom")
+
+pLP8
+
+plot_grid(pLP23, pLP8, ncol = 1, align = "v", rel_heights = c(0.55, 1))
+```
+
+

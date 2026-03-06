@@ -1,0 +1,2421 @@
+---
+title: "Hopping of CBS-Sox2P constructs from LP-116kb"
+author: "Mathias Eder"
+date: "2026-03-02"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# Nomenclature
+When generating the datasets for this hopping experiments, we named the data often with their plasmid names.
+Here is a short translator for the nomenclature:
+pME034 --> Sox2P insert
+pMK01 --> 3xCBS_Fw_Sox2P insert
+pMK02 --> 3xCBS_Rv_Sox2P insert
+pMK03 --> 1xCBS_Fw_Sox2P insert
+
+
+# Script to generate the following figures
+- fig S1B
+- fig S1C
+- fig S1E
+- fig 2C
+- fig S2B-S2E
+- fig 2D
+- fig S2A
+- fig S2A
+- fig S5G
+- fig 6D
+- fig S2F-S2I
+
+
+# Set-up
+##Libraries
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+#library(broom)
+library(Biostrings)
+library(stringr)
+library(readr)
+#library(tagMeppr)
+#library(withr)
+library(knitr)
+library(RColorBrewer)
+#library(tagmapAnalyseR)
+# library(UpSetR)
+# library(ComplexHeatmap)
+library(purrr)
+# library(ggpubr)
+# library(cowplot)
+library(RcppRoll)
+library(viridis)
+library(plotly)
+library(GGally)
+library(cowplot)
+library(ggh4x)
+library(ggsignif)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+## Paths & parameters
+```{r paths_parameters}
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("analysis_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+# File paths
+```{r}
+
+path_CTCF_sites = "/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed"
+
+path_tib_23_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_-116kb_Sox2P_pools.txt"
+path_tib_CTCF_Sox2P = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_CBS_Sox2P.tsv"
+
+
+path_median_mTurq_relevant_cell_lines = "/DATA/projects/CTCF_Sox2/Info_files/me20250707_median_mTurq_mCherry_GFP_sorting_all.tsv"
+path_sorting_stats = "/DATA/projects/CTCF_Sox2/Info_files/me20250707_stats_for_expression_score_mCherry.tsv"
+
+```
+
+#Load functions
+```{r load functions}
+source("/DATA/projects/Sox2/General_functions/CM20240621_general_plotting_functions.R")
+source("/DATA/projects/Sox2/General_functions/CM20250318_new_expression_score_functions.R")
+```
+
+# Relevant annotations
+```{r element_coordinates}
+
+# Location of enhancer / gene
+enhancer <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34753415,
+                                     end = 34766401),
+                    strand = "*")
+
+#gene based on mm10, ucsc browser, RefSeq annotation
+# Sox2
+# chr3:34649995-34652461 (+)
+# id = NM_011443.4
+
+Sox2_gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34649995,
+                                     end = 34652461),
+                    strand = "+")
+
+landingPad_23 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34643960,
+                                     end = 34643962),
+                    strand = "+")
+
+landingPad_8 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34721183,
+                                     end = 34721184),
+                    strand = "+")
+
+
+LP_tib = tibble(landing_pad = c("LP23", "LP8"), 
+                start = c( start(landingPad_23),start(landingPad_8)))
+
+# Add annotations from Brosh paper
+Brosh <- import.bed('/DATA/projects/CTCF_Sox2/external_datasets/annotations_Brosh_paper/enhancer_elements_Brosh2023_Sox2_V2.bed')
+
+
+#CTCF sites based on our own mapping
+# new analysis (based on mapping to mm10 only)
+CTCF_mm10_new <- import.bed('/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed')
+
+#filtering:
+CTCF_mm10.chr3 <- CTCF_mm10_new[seqnames(CTCF_mm10_new)== 'chr3']
+# add the missing site after the SCR
+CTCF_mm10.chr3_extra = sort(c(CTCF_mm10.chr3,
+                         GRanges(seqnames = "chr3",
+                                 IRanges(start = 34772210, end = 34772210),
+                                 strand = "+")),
+                         ignore.strand = T)
+
+
+prange_zoom = c(34500000 , 35000000)
+prange2 = c(34000000, 35500000)
+prange_far = c(32000000, 37000000)
+#zoom in on only the SCR +- 50kb
+prange_LP = c(start(landingPad_23)-5E4, end(landingPad_23)+5E4)
+prange_SCR = c(start(enhancer)-5E4, end(enhancer)+5E4)
+prange_plot = c(32643960, 36643960) #+/- 2MB from landing pad
+prange_loop = c(34631804, 34778268)
+prange_zoom = c(34.5E6, 35E6)
+prange_zoom_paper = c(34.59E6, 34.83E6)
+prange_SCR = c(34.725E6, 34.785E6)
+range_2Mb = c(33.643960E6, 35.643960E6)
+# Focus on peak around the SCR
+prange_ChIP = c(34611804,34810000)
+```
+
+## Colour setup
+```{r}
+myCols_insert_cell_line <- c(
+  `23_MK01_C5` = '#1b9e77',   # Teal green
+  `23_MK02_C2` = '#d95f02',   # Strong orange
+  `23_MK03_C1` = '#7570b3',   # Purple
+  `23_34A` = 'black', # blue for ctrl cell line
+  `8_MK01_C1` = '#1b9e77',   # Teal green
+  `8_MK01_C2` = '#1b9e77',   # Teal green
+  `8_MK02_C5` = '#d95f02',   # Strong orange
+  `8_MK03_C3` = '#7570b3',   # Purple
+  `8_34` = 'black' # blue for ctrl cell line
+)
+
+col_scale_MK_CL <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_cell_line,
+  aesthetics = c("colour", "fill")
+)
+```
+
+
+# Load data
+```{r}
+
+#load the -116kb data (LP23)
+tib_23_all_data = read_tsv(path_tib_23_ints) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) 
+
+#the control pool in E2285 (rep3) was sequenced as 10 separate libraries, combine them into one sample
+tib_23_E2285_ctrls = tib_23_all_data %>%
+  filter(replicate == "rep3" & insert == "Sox2P" & sample_type == "control pool") %>%
+  mutate(sample_name = "Sox2P-reporter -116 kb, unsorted control pool rep3")%>%
+  group_by(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr) %>%
+  summarize(read_count = sum(read_count),
+            read_count_1 = sum(read_count_1),
+            read_count_2 = sum(read_count_2), .groups = "keep") 
+
+tib_23 = tib_23_all_data %>%
+  #select the rest of the data
+  filter(!(replicate == "rep3" & insert == "Sox2P" & sample_type == "control pool")) %>%
+  select(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr, 
+         read_count, read_count_1, read_count_2)%>%
+  #add merged controls back in
+  bind_rows(tib_23_E2285_ctrls) %>%
+  #mark hopped integrations
+  mutate(hopped = start != 34643961,
+         cell_line = "23_34A") %>%
+ filter(!(start >= 34721183 & start <= 34721192)) #filter contamination from LP8
+
+
+# Load CTCF_Sox2P data
+tib_CTCF_Sox2P = read_tsv("/DATA/projects/CTCF_Sox2/Integrations_files/pools_ints_CTCF_Sox2P.tsv") %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) %>% 
+  mutate(LP = case_when(experiment == "E2292" ~ "LP8",
+                        .default = "LP23"),
+         hopped = case_when(LP == "LP8" ~ start  < 34721183 | start > 34721192,
+                            LP == "LP23" ~ start != 34643961)) %>%
+  select(chr, start, end, seq, strand, replicate, experiment, launch_pad_location, insert, genotype, sample_type, sorted_gate, pool_nr,
+         read_count, read_count_1, read_count_2, hopped, cell_line)
+
+
+# Filter integrations
+tib_filtered = bind_rows(tib_23, tib_CTCF_Sox2P) %>%
+  #add variables used in the plotting (old names of cell lines etc) 
+  mutate(population_tmp = case_when(sample_type == "control pool" ~ "ctrl",
+                                .default = sorted_gate),
+         population = case_when(population_tmp == "P01" ~ "P1",
+                                population_tmp == "P56" ~ "P5",
+                                .default = population_tmp),
+         landing_pad = case_when(launch_pad_location == "-116 kb" ~ "LP23",
+                                 launch_pad_location == "-39 kb" ~ "LP8")) %>%
+  #annotate confidence of mapping (one or both ITRs)
+  mutate(mapped_arms = case_when(read_count_1 == 0 ~ "rv_only",
+                                 read_count_2 == 0 ~ "fw_only",
+                                 read_count_1 > 0 & read_count_2 > 0 ~ "both_arms")) %>%
+  
+  #filter the data
+  filter(population == "ctrl" | read_count >= 2) %>% #for ctrl distribution 1 mapping read is enough
+  filter(strand %in% c("+", "-")) %>%
+  select(-c(population_tmp))
+
+# quick check
+table(tib_filtered$cell_line, tib_filtered$population)
+table(tib_filtered$population, tib_filtered$chr)
+
+tib_filtered %>% filter(chr == "chr3") %>%
+  group_by(population, cell_line) %>% tally() %>% spread(cell_line, n)
+
+tib_filtered_P1_strict = tib_filtered %>%
+  filter(!(population == "P1" & mapped_arms != "both_arms")) %>% #only keep P1 integrations with 2 mapped arms
+  filter(!(population == "P0" & mapped_arms != "both_arms")) %>% #only keep P0 integrations with 2 mapped arms from LP-39kb
+  mutate(population = factor(population)) 
+```
+
+## Remove contamination of E2401
+```{r}
+tib_E2401 = tib_filtered %>% filter(experiment == "E2401")
+
+# Find regions of contaminated integrations
+top_dupl_locations = tib_E2401 %>% 
+  filter(chr == "chr3" & hopped & strand != "*") %>% 
+  group_by(start, strand) %>% 
+  summarize(N_samples_found = n()) %>% 
+  ungroup() %>% 
+  slice_max(N_samples_found, n = 18)
+
+top_dupl_locations_2 = tib_E2401 %>% 
+  filter(chr =="chr3" & hopped & strand != "*") %>% 
+  group_by(start, strand) %>% 
+  summarize(N_cell_lines_found = length(unique(cell_line))) %>% 
+  filter(N_cell_lines_found == 3)
+
+top_combined = top_dupl_locations %>% left_join(top_dupl_locations_2, by = c("start", "strand"))
+#Note:
+# In this way we find 2200 integrations in the three cell lines that can be found from 149 times to 37 times.
+# all of the 18 hits are found in all 3 cell lines
+
+
+# Remove integrations from data
+tib_E2401_curated <- tib_E2401 %>%
+  filter(
+    ! (start  %in% top_dupl_locations$start &
+       strand %in% top_dupl_locations$strand)
+  )
+
+#filter without old E2401
+tib_filtered_1 = tib_filtered %>% filter(experiment != "E2401")
+
+tib_filtered_curated = bind_rows(tib_filtered_1, tib_E2401_curated)
+
+tib_filtered_curated_strict = tib_filtered_curated %>%
+  filter(!(population == "P1" & mapped_arms != "both_arms")) %>% #only keep P1 integrations with 2 mapped arms
+  filter(!(population == "P0" & mapped_arms != "both_arms")) %>% #only keep P0 integrations with 2 mapped arms at LP-39kb
+  mutate(population = factor(population)) 
+
+#saveRDS(tib_filtered_curated_strict, file = "tib_filtered_curated_strict.rds")
+```
+
+#Expression data
+```{r}
+#load median expression values (from sorting pdfs)
+median_sorted_mTurq = read_tsv(path_median_mTurq_relevant_cell_lines) %>% 
+  select(experiment, cell_line, mCh_status, population, replicate, construct, mCherry_selection, mTurq, mCherry, GFP)
+
+#get a general mTurq level per gate, for the mCh+ hopping
+general_mTurq_mChpos = median_sorted_mTurq %>% 
+  filter(str_detect(population, "^P\\d+")) %>%
+  filter(mCherry_selection == "mCh+") %>%
+  group_by(cell_line, population, construct, mCherry_selection) %>%
+  summarise(mTurq_mean = mean(mTurq),
+            mCherry_mean = mean(mCherry),
+            GFP_mean = mean(GFP)) %>%
+  ungroup() %>%
+  select(cell_line, population, mTurq_mean, mCherry_mean, GFP_mean)
+
+#add mTurq values to the integration tibble
+tib_filtered_FACS_vals = left_join(tib_filtered_curated_strict, general_mTurq_mChpos, by = join_by(cell_line, population)) %>%
+  filter(population != "ctrl") %>%
+   dplyr::rename(mTurq_expr_gate = mTurq_mean,
+                 mCh_expr_gate = mCherry_mean) 
+
+#check that all integrations have a fluorescence value:
+tib_filtered_FACS_vals %>% filter(is.na(mTurq_expr_gate))
+```
+
+#Sorting statistics
+```{r}
+sorting_stats_tib_raw = read_tsv(path_sorting_stats) 
+
+sorting_stats_tib = sorting_stats_tib_raw %>%
+  mutate(recorded_fraction = (recorded_count + 1)/total_recorded) %>% #recorded fraction with psuedocount of 1
+  mutate(weigh_factor = recorded_fraction / sorted_count, 
+         weigh_factor_1M = weigh_factor * 1E6) # weigh factor 1M is just to make the factor more easily human readable
+```
+
+```{r}
+# number or replications per population
+sorting_stats_tib_repN = sorting_stats_tib %>%
+  filter(cell_line %in% c("23_34A", "23_MK01_C5", "23_MK02_C2", "23_MK03_C1")) %>%
+  group_by(cell_line, population) %>%
+  summarize(N_reps = n()) %>% #number of reps per population per cell line
+  group_by(cell_line) %>%
+  mutate(min_reps_CL = min(N_reps) ) %>% #least replicated population
+  mutate(rep_weigh_factor = min_reps_CL/N_reps) #scale the other populations to the least replicated pop
+
+# adjust weigh factor by the replicate weigh factor
+sorting_stats_tib_repcor = 
+  sorting_stats_tib %>%
+  left_join(sorting_stats_tib_repN) %>%
+  mutate(weigh_factor_old = weigh_factor,
+         weigh_factor = weigh_factor_old * rep_weigh_factor)
+```
+
+```{r}
+tib_filtered_FACS_vals %>% 
+  filter(cell_line %in% c("23_34A", "23_MK01_C5", "23_MK02_C2", "23_MK03_C1")) %>%
+  group_by(cell_line, experiment, replicate, population) %>%
+  filter(hopped) %>%
+  summarize(N_ints = n()) %>%
+  left_join(sorting_stats_tib)
+```
+
+#Functions
+```{r}
+# Plotting ranges
+prange_zoom = c(34.5E6, 35E6)
+prange_zoom_paper = c(34.59E6, 34.83E6)
+prange_SCR = c(34.725E6, 34.785E6)
+
+
+# Color annotations
+## SCR 
+brown = "#ffb000"
+
+#color schemes
+myCols_blue = c('#525252', "#080E5B",  "#212B71", "#3A4987", "#465893", "#5A719A", "#6C8AA0")
+names(myCols_blue) = c("ctrl", paste0("P", 1:6))
+colScale7_blue <- scale_colour_manual(name = "population", values = myCols_blue)
+fillScale7_blue <- scale_fill_manual(name = "population", values = myCols_blue)
+
+myCols_blue_strand = c( "#080E5B", "#5A719A")
+names(myCols_blue_strand) = c("+","-")
+colScale2_blue <- scale_colour_manual(name = "strand", values = myCols_blue_strand)
+fillScale2_blue <- scale_fill_manual(name = "strand", values = myCols_blue_strand)
+
+```
+
+#Create color palette for different cell lines
+```{r}
+myCols_green = c('#525252',"#0A3F30", "#175643", "#246D58", "#30846B", "#3D9B7E", "#49B292")
+names(myCols_green) = c("ctrl", paste0("P", 1:6))
+colScale7_green <- scale_colour_manual(name = "population", values = myCols_green)
+fillScale7_green <- scale_fill_manual(name = "population", values = myCols_green)
+
+myCols_orange = c('#525252', "#572601", "#72380B", "#8F4A15", "#AA5C20", "#C66D2A", "#E07F34")
+names(myCols_orange) = c("ctrl", paste0("P", 1:6))
+colScale7_orange <- scale_colour_manual(name = "population", values = myCols_orange)
+fillScale7_orange <- scale_fill_manual(name = "population", values = myCols_orange)
+
+myCols_purple = c('#525252', "#2E2D47", "#424060", "#565378", "#696791", "#7D7AA9", "#918DC2")
+names(myCols_purple) = c("ctrl", paste0("P", 1:6))
+colScale7_purple <- scale_colour_manual(name = "population", values = myCols_purple)
+fillScale7_purple <- scale_fill_manual(name = "population", values = myCols_purple)
+```
+
+```{r}
+all_exp = unique(tib_filtered_curated_strict$experiment)
+```
+
+## Plotting Beeswarm function
+```{r}
+plot_beeswarm_only = function(TIB, CL = "23_34A", EXP = all_exp, P_RANGE = prange_zoom,
+                              PLOT_CTCF = F, PLOT_ANNOT = T,
+                              TITLE = NULL, POINT_SIZE = 0.75, RANDOM_METHOD = "quasirandom",
+                              NEXT_RANGE = NULL){
+  tib_for_plot = filter(TIB, hopped & chr == "chr3" & cell_line %in% CL & experiment %in% EXP & start >= P_RANGE[1] & start <= P_RANGE[2])
+  LP_tib_cl = select(tib_for_plot, c(cell_line, landing_pad)) %>% 
+    distinct() %>% left_join(LP_tib)
+  
+  ggplot(filter(tib_for_plot, hopped & chr == "chr3" & cell_line %in% CL & experiment %in% EXP),
+         aes(x = start, y = population, col = population)) +
+    {if(length(CL)>1) facet_grid(cell_line ~ .)} +  #only facet when necessary
+
+    {if (PLOT_ANNOT)
+      list( #add elements in a list, you cannot use + inside an if statement
+        # annotate enhancer
+        geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+        annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+        # annotate gene
+        annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red'),
+        geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red') )} +
+    
+     #annotate landing pad
+    {if(PLOT_ANNOT & length(CL)== 1)
+      geom_vline(xintercept = pull(
+        filter(LP_tib, landing_pad %in% unique(tib_for_plot$landing_pad)), 
+        start),
+        col = 'darkgrey')} +
+    {if(PLOT_ANNOT & length(CL) > 1)
+       geom_vline(data = LP_tib_cl, aes(xintercept = start), col = 'darkgrey')} +
+
+    # # annotate CTCFs
+    {if(PLOT_CTCF)geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey', lty="11")}+
+    {if(!is.null(NEXT_RANGE)) geom_rug(data = tibble(range = NEXT_RANGE),
+                                       aes(x = range),
+                                       fill = 'grey',
+                                       inherit.aes = F)}+
+    
+    
+    #datapoints
+    geom_quasirandom(alpha = 0.5, size = POINT_SIZE, varwidth = T, bandwidth = 0.8,
+                     # shape = 16, #changes to point without border, so alpha applies to the whole point
+                     method = RANDOM_METHOD,
+                     stroke = NA) +
+    geom_text(data = plyr::count(tib_for_plot, vars = c("cell_line", "population")), aes(label = paste("n = ", freq, sep = ""),
+                                                                                         x = Inf),
+              hjust = "inward", vjust = "top",
+              col = 'black') +
+    
+    #layout:
+    labs(x='Genomic coordinate (Mb)',y='sorted gate') +
+    theme_classic(base_size = 16) +
+    theme(legend.position = "none") +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                       limits=P_RANGE, expand=c(0,0)) +
+    scale_y_discrete(limits = rev, drop=F) +
+    ggtitle(TITLE) +
+    ## CHANGED: choose the appropriate colour scale based on CL
+    { if (length(CL)==1) {
+        switch(CL,
+          "23_34A"       = colScale7_blue,
+          "23_MK01_C5"   = colScale7_green,
+          "23_MK02_C2"   = colScale7_orange,
+          "23_MK03_C1"   = colScale7_purple,
+          colScale7_blue  # default fallback
+        )
+      } else {
+        colScale7_blue  # when faceting multiple lines, fall back to blue (or choose your own default)
+      }
+    }
+}
+```
+
+## Figure 2C, S2A - Scatterplot of integrations
+```{r Figure 2C, S2A}
+# Plot Sox2P
+pSox2P_bs =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & population != "P0") %>% droplevels(),
+                   EXP = all_exp, 
+                   CL = "23_34A",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+
+# Plot 1xCBS_Fw_Sox2P
+p1xCBS_Fw_Sox2P_bs =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & population != "P0") %>% droplevels(),
+                   EXP = all_exp, 
+                   CL = "23_MK03_C1",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+
+
+# Plot 3xCBS_Fw_Sox2P
+p3xCBS_Fw_Sox2P_bs =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & population != "P0") %>% droplevels(),
+                   EXP = all_exp, 
+                   CL = "23_MK01_C5",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+
+# Plot 3xCBS_Rv_Sox2P
+p3xCBS_Rv_Sox2P_bs =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & population != "P0") %>% droplevels(),
+                   EXP = all_exp, 
+                   CL = "23_MK02_C2",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+
+# Plot 1xCBS_Fw_Sox2P
+p1xCBS_Fw_Sox2P_bs =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & population != "P0") %>% droplevels(),
+                   EXP = all_exp, 
+                   CL = "23_MK03_C1",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+
+plot_grid(pSox2P_bs, p1xCBS_Fw_Sox2P_bs, p3xCBS_Fw_Sox2P_bs, p3xCBS_Rv_Sox2P_bs, align = "hv", nrow = 1)
+```
+
+# Strand based beeswarm function
+```{r stranded beeswarm}
+plot_beeswarm_only_stranded = function(TIB, CL = "23_34A", EXP = all_exp, P_RANGE = prange_zoom,
+                              PLOT_CTCF = FALSE, PLOT_ANNOT = TRUE,
+                              SPLIT_STRAND = FALSE,
+                              TITLE = NULL, POINT_SIZE = 0.75, RANDOM_METHOD = "quasirandom",
+                              NEXT_RANGE = NULL){
+  
+  # 1) subset once
+  tib_for_plot <- TIB %>%
+    filter(hopped, chr == "chr3",
+           cell_line %in% CL, experiment %in% EXP,
+           between(start, P_RANGE[1], P_RANGE[2]))
+  
+  # 2) landing‐pad join (unchanged)
+  LP_tib_cl <- tib_for_plot %>%
+    distinct(cell_line, landing_pad) %>%
+    left_join(LP_tib, by = "landing_pad")
+  
+  # 3) compute counts *with* strand if requested
+  if (SPLIT_STRAND) {
+    count_df <- tib_for_plot %>%
+      count(cell_line, strand, population)
+  } else {
+    count_df <- tib_for_plot %>%
+      count(cell_line, population)
+  }
+  
+ 
+  # 4) now build the plot
+  ggplot(tib_for_plot,
+         aes(x = start, y = population, col = population)) +
+    
+    # faceting
+    {
+      if (SPLIT_STRAND) {
+        if (length(CL) > 1) facet_grid(cell_line ~ strand)
+        else                facet_wrap(~ strand)
+      } else {
+        if (length(CL) > 1) facet_grid(cell_line ~ .)
+        else                NULL
+      }
+    } +
+    
+    # (all your annotations go here, unchanged) … +
+    {if (PLOT_ANNOT)
+      list( #add elements in a list, you cannot use + inside an if statement
+        # annotate enhancer
+        geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+        annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+        # annotate LP
+        geom_vline(xintercept = start(landingPad_8), col = "black", linetype = "dotted"), 
+        geom_vline(xintercept = start(landingPad_23), col = "black", linetype = "dotted"),
+        
+        # annotate gene
+        annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red'),
+        geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red') )} +
+    
+    # # annotate CTCFs
+    {if(PLOT_CTCF)geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey', lty="11")}+
+    {if(!is.null(NEXT_RANGE)) geom_rug(data = tibble(range = NEXT_RANGE),
+                                       aes(x = range),
+                                       fill = 'grey',
+                                       inherit.aes = F)}+
+    
+    geom_quasirandom(alpha = 0.5, size = POINT_SIZE, varwidth = TRUE,
+                     bandwidth = 0.8, method = RANDOM_METHOD, stroke = NA) +
+    
+    # 5) the *only* geom_text, pointing at count_df
+    geom_text(
+      data = count_df,
+      aes(label = paste0("n = ", n), x = Inf),
+      hjust = "inward", vjust = "top",
+      col = 'black'
+    ) +
+    
+    # 6) scales / theme / title (unchanged) …
+    labs(x = 'Genomic coordinate (Mb)', y = 'sorted gate') +
+    theme_classic(base_size = 16) +
+    theme(legend.position = "none") +
+    scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                       limits=P_RANGE, expand=c(0,0)) +
+    scale_y_discrete(limits = rev, drop=F) +
+    ggtitle(TITLE) +
+    ## CHANGED: choose the appropriate colour scale based on CL
+    { if (length(CL)==1) {
+        switch(CL,
+          "23_34A"       = colScale7_blue,
+          "23_MK01_C5"   = colScale7_green,
+          "23_MK02_C2"   = colScale7_orange,
+          "23_MK03_C1"   = colScale7_purple,
+          colScale7_blue  # default fallback
+        )
+      } else {
+        colScale7_blue  # when faceting multiple lines, fall back to blue (or choose your own default)
+      }
+    }
+    
+}
+
+```
+
+## Plot Beeswarm of stranded integrations Fig. S2B-S2E
+```{r figure S2B-S2E}
+# Plot Sox2P stranded
+pBS_Sox2P_stranded = 
+plot_beeswarm_only_stranded(TIB = tib_filtered_curated_strict %>% 
+                              filter(hopped & chr == "chr3" & experiment %in% all_exp) %>% 
+                              droplevels(),
+                   CL = c("23_34A"),
+                   SPLIT_STRAND = T, 
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5,
+                   NEXT_RANGE = prange_zoom_paper
+)
+pBS_Sox2P_stranded
+
+# Plot 3xCBS_Fw_Sox2P stranded
+pBS_3xCBS_Fw_Sox2P_stranded = 
+plot_beeswarm_only_stranded(TIB = tib_filtered_curated_strict %>% 
+                              filter(hopped & chr == "chr3" & experiment %in% all_exp) %>% 
+                              droplevels(),
+                   CL = c("23_MK01_C5"),
+                   SPLIT_STRAND = T, 
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5,
+                   NEXT_RANGE = prange_zoom_paper
+)
+pBS_3xCBS_Fw_Sox2P_stranded
+
+# Plot 3xCBS_Rv_Sox2P stranded
+pBS_3xCBS_Rv_Sox2P_stranded = 
+plot_beeswarm_only_stranded(TIB = tib_filtered_curated_strict %>% 
+                              filter(hopped & chr == "chr3" & experiment %in% all_exp) %>% 
+                              droplevels(),
+                   CL = c("23_MK02_C2"),
+                   SPLIT_STRAND = T, 
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5,
+                   NEXT_RANGE = prange_zoom_paper
+                   )
+pBS_3xCBS_Rv_Sox2P_stranded
+
+# Plot 1xCBS_Fw_Sox2P stranded
+pBS_1xCBS_Fw_Sox2P_stranded = 
+plot_beeswarm_only_stranded(TIB = tib_filtered_curated_strict %>% 
+                              filter(hopped & chr == "chr3" & experiment %in% all_exp) %>% 
+                              droplevels(),
+                   CL = c("23_MK03_C1"),
+                   SPLIT_STRAND = T, 
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5,
+                   NEXT_RANGE = prange_zoom_paper
+)
+pBS_1xCBS_Fw_Sox2P_stranded
+
+# Plot stranded integrations together
+plot_grid(pBS_Sox2P_stranded, pBS_1xCBS_Fw_Sox2P_stranded, pBS_3xCBS_Fw_Sox2P_stranded,pBS_3xCBS_Rv_Sox2P_stranded, ncol = 2, axis = "lb", align = "vh")
+```
+
+
+#Expression score
+## Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 1000
+all_exp = unique(tib_filtered_FACS_vals$experiment)
+
+tib_filtered_FACS_vals_comb = tib_filtered_FACS_vals %>% left_join(sorting_stats_tib_repcor)
+#saveRDS(tib_filtered_FACS_vals_comb, "/DATA/projects/CTCF_Sox2/analysis/RDS_files/tib_filtered_FACS_vals_comb.rds")
+
+#calculate running mean on random sample of same size, 1000 times
+# expr_score_tib_23_34A = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh(TIB,
+#                                                                                               binsize = BinSize,
+#                                                                                               N_bins_window = 10,
+#                                                                                               calculation_window =  prange_zoom,
+#                                                                                               CL = "23_34A", EXP = all_exp)},
+#                                             TIB = tib_filtered_FACS_vals_comb,
+#                                             N_resamples = N_bootstrap)
+
+#saveRDS(expr_score_tib_23_34A, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_34A.rds")
+expr_score_tib_23_34A = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_34A.rds")
+
+expr_score_sum_tib_23_34A = bootstrap_summary_fun(expr_score_tib_23_34A,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_34A =
+  expr_score_function_new_weigh(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_34A",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_34A = left_join(expr_score_sum_tib_23_34A,  expr_score_real_23_34A) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+### Figure 2D
+```{r}
+pExpr_23_34A = 
+ggplot(expr_score_sum_tib_filt_comb_23_34A, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey', linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2, fill = "#080E5B") +
+  #geom_line( aes(y = expr_score_window_mean), col = "orange") +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel), col = "#080E5B") +
+ 
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, NA)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'none')
+
+pExpr_23_34A
+```
+
+## 3xCBS_Fw_Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 1000
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+tib_filtered_FACS_vals_comb = tib_filtered_FACS_vals %>% left_join(sorting_stats_tib_repcor)
+
+
+# calculate running mean on random sample of same size, 500 times
+# expr_score_tib_23_MK01_C5 = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh(TIB,
+#                                                                                               binsize = BinSize,
+#                                                                                               N_bins_window = 10,
+#                                                                                               calculation_window =  prange_zoom,
+#                                                                                               CL = "23_MK01_C5", EXP = all_exp)},
+#                                             TIB = tib_filtered_FACS_vals_comb,
+#                                             N_resamples = N_bootstrap)
+# 
+# saveRDS(expr_score_tib_23_MK01_C5, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK01_C5.rds")
+expr_score_tib_23_MK01_C5 = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK01_C5.rds")
+
+expr_score_sum_tib_23_MK01_C5 = bootstrap_summary_fun(expr_score_tib_23_MK01_C5,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK01_C5 =
+  expr_score_function_new_weigh(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK01_C5",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK01_C5 = left_join(expr_score_sum_tib_23_MK01_C5,  expr_score_real_23_MK01_C5) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+### Figure S2A
+```{r}
+pExpr_23_MK01_C5 =
+ggplot(expr_score_sum_tib_filt_comb_23_MK01_C5, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2, fill = "#1b9e77") +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel), col = "#1b9e77") +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'none')
+  
+
+pExpr_23_MK01_C5
+```
+
+## 3xCBS_Rv_Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 1000
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+tib_filtered_FACS_vals_comb = tib_filtered_FACS_vals %>% left_join(sorting_stats_tib_repcor)
+
+
+# calculate running mean on random sample of same size, 500 times
+# expr_score_tib_23_MK02_C2 = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh(TIB,
+#                                                                                               binsize = BinSize,
+#                                                                                               N_bins_window = 10,
+#                                                                                               calculation_window =  prange_zoom,
+#                                                                                               CL = "23_MK02_C2", EXP = all_exp)},
+#                                             TIB = tib_filtered_FACS_vals_comb,
+# 
+#                                                                                      N_resamples = N_bootstrap)
+# saveRDS(expr_score_tib_23_MK02_C2, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK02_C2.rds")
+expr_score_tib_23_MK02_C2 = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK02_C2.rds")
+
+
+
+expr_score_sum_tib_23_MK02_C2 = bootstrap_summary_fun(expr_score_tib_23_MK02_C2,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK02_C2 =
+  expr_score_function_new_weigh(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK02_C2",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK02_C2 = left_join(expr_score_sum_tib_23_MK02_C2,  expr_score_real_23_MK02_C2) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+### Figure S2A
+```{r}
+pExpr_23_MK02_C2 =
+ggplot(expr_score_sum_tib_filt_comb_23_MK02_C2, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2, fill = "#d95f02") +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel), col = "#d95f02") +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'none')
+
+pExpr_23_MK02_C2
+```
+
+## 1xCBS_Fw_Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 1000
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+tib_filtered_FACS_vals_comb = tib_filtered_FACS_vals %>% left_join(sorting_stats_tib_repcor)
+
+
+# calculate running mean on random sample of same size, 500 times
+# expr_score_tib_23_MK03_C1 = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh(TIB,
+#                                                                                                       binsize = BinSize,
+#                                                                                                       N_bins_window = 10,
+#                                                                                                       calculation_window =  prange_zoom,
+#                                                                                                       CL = "23_MK03_C1", EXP = all_exp)},
+#                                                     TIB = tib_filtered_FACS_vals_comb,
+#                                                     N_resamples = N_bootstrap)
+# 
+# saveRDS(expr_score_tib_23_MK03_C1, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK03_C1.rds")
+expr_score_tib_23_MK03_C1 = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK03_C1.rds")
+
+
+
+expr_score_sum_tib_23_MK03_C1 = bootstrap_summary_fun(expr_score_tib_23_MK03_C1,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK03_C1 =
+  expr_score_function_new_weigh(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK03_C1",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK03_C1 = left_join(expr_score_sum_tib_23_MK03_C1,  expr_score_real_23_MK03_C1) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+### Figure S2A
+```{r}
+pExpr_23_MK03_C1 =
+ggplot(expr_score_sum_tib_filt_comb_23_MK03_C1, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2, fill = "#7570b3") +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel), col = "#7570b3") +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, NA)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'none')
+
+pExpr_23_MK03_C1
+```
+### Plot together S2A
+```{r}
+plot_grid(pExpr_23_34A, pExpr_23_MK03_C1, pExpr_23_MK01_C5, pExpr_23_MK02_C2, ncol = 2, axis = "lb", align = "vh")
+```
+
+#Stranded - Expression score
+## Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 2000
+all_exp = unique(tib_filtered_FACS_vals$experiment)
+
+
+# calculate running mean on random sample of same size, 1000 times
+# expr_score_tib_23_34A_str = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh_stranded(TIB,
+#                                                                                               binsize = BinSize,
+#                                                                                               N_bins_window = 10,
+#                                                                                               calculation_window =  prange_zoom,
+#                                                                                               CL = "23_34A", EXP = all_exp)},
+#                                             TIB = tib_filtered_FACS_vals_comb,
+#                                             N_resamples = N_bootstrap)
+
+# saveRDS(expr_score_tib_23_34A_str, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_34A_str.rds")
+expr_score_tib_23_34A_str = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_34A_str.rds")
+
+
+
+expr_score_sum_tib_23_34A_str = bootstrap_summary_fun_str(expr_score_tib_23_34A_str,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_34A_str =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_34A",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_34A_str = left_join(expr_score_sum_tib_23_34A_str,  expr_score_real_23_34A_str) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+
+```{r}
+pExpr_23_34A_str = 
+ggplot(expr_score_sum_tib_filt_comb_23_34A_str, aes(x = mid_interval, col = strand, fill = strand, linetype = strand)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = "orange") +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel)) +
+ 
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, NA)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom')
+
+pExpr_23_34A_str
+
+
+## split by strand
+pExpr_23_34A_str_facet = 
+ggplot(expr_score_sum_tib_filt_comb_23_34A_str, aes(x = mid_interval)) +
+  facet_grid(. ~ strand) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2, fill = "#080E5B") +
+  geom_line( aes(y = expr_score_window_mean), col = "orange") +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel), col = "#080E5B") +
+ 
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, NA)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom')
+
+pExpr_23_34A_str_facet
+```
+
+## 3xCBS_Fw_Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 2000
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+tib_filtered_FACS_vals_comb = tib_filtered_FACS_vals %>% left_join(sorting_stats_tib_repcor)
+
+
+# calculate running mean on random sample of same size, 500 times
+# expr_score_tib_23_MK01_C5_str = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh_stranded(TIB,
+#                                                                                               binsize = BinSize,
+#                                                                                               N_bins_window = 10,
+#                                                                                               calculation_window =  prange_zoom,
+#                                                                                               CL = "23_MK01_C5",
+#                                                                                               EXP = all_exp)},
+#                                             TIB = tib_filtered_FACS_vals_comb,
+#                                             N_resamples = N_bootstrap)
+
+#saveRDS(expr_score_tib_23_MK01_C5_str, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK01_C5_str.rds")
+expr_score_tib_23_MK01_C5_str = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK01_C5_str.rds")
+
+expr_score_sum_tib_23_MK01_C5 = bootstrap_summary_fun_str(expr_score_tib_23_MK01_C5_str,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK01_C5 =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK01_C5",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK01_C5_str = left_join(expr_score_sum_tib_23_MK01_C5,  expr_score_real_23_MK01_C5) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+
+```{r}
+pExpr_23_MK01_C5_str =
+ggplot(expr_score_sum_tib_filt_comb_23_MK01_C5_str, aes(x = mid_interval, col = strand, fill = strand, linetype = strand)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(landingPad_8), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel)) +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom') +
+  theme(axis.title.y=element_blank())
+
+pExpr_23_MK01_C5_str
+```
+
+## 3xCBS_Rv_Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 2
+N_bootstrap = 1000
+BinSize = 2000
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+tib_filtered_FACS_vals_comb = tib_filtered_FACS_vals %>% left_join(sorting_stats_tib_repcor)
+
+
+#calculate running mean on random sample of same size, 500 times
+# expr_score_tib_23_MK02_C2_str = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh_stranded(TIB,
+#                                                                                               binsize = BinSize,
+#                                                                                               N_bins_window = 10,
+#                                                                                               calculation_window =  prange_zoom,
+#                                                                                               CL = "23_MK02_C2", EXP = all_exp)},
+#                                             TIB = tib_filtered_FACS_vals_comb,
+# 
+#                                                                                      N_resamples = N_bootstrap)
+# saveRDS(expr_score_tib_23_MK02_C2_str, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK02_C2_str.rds")
+expr_score_tib_23_MK02_C2_str = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK02_C2_str.rds")
+
+
+
+expr_score_sum_tib_23_MK02_C2 = bootstrap_summary_fun_str(expr_score_tib_23_MK02_C2_str,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK02_C2_str =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK02_C2",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK02_C2_str = left_join(expr_score_sum_tib_23_MK02_C2,  expr_score_real_23_MK02_C2_str) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+
+```{r}
+pExpr_23_MK02_C2_str =
+ggplot(expr_score_sum_tib_filt_comb_23_MK02_C2_str, aes(x = mid_interval, col = strand, fill = strand, linetype = strand)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel)) +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom') +
+  theme(axis.title.y=element_blank())
+
+pExpr_23_MK02_C2_str
+```
+
+## 1xCBS_Fw_Sox2P
+```{r}
+#all combined, 5kb window
+set.seed(20240331)
+min_ints_window = 3
+N_bootstrap = 1000
+BinSize = 2000
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+tib_filtered_FACS_vals_comb = tib_filtered_FACS_vals %>% left_join(sorting_stats_tib_repcor)
+
+
+# calculate running mean on random sample of same size, 500 times
+# expr_score_tib_23_MK03_C1 = create_bootstrap_tibble(FUN = function(TIB){expr_score_function_new_weigh_stranded(TIB,
+#                                                                                               binsize = BinSize,
+#                                                                                               N_bins_window = 10,
+#                                                                                               calculation_window =  prange_zoom,
+#                                                                                               CL = "23_MK03_C1", EXP = all_exp)},
+#                                             TIB = tib_filtered_FACS_vals_comb,
+# 
+#                                                                                      N_resamples = N_bootstrap)
+
+# saveRDS(expr_score_tib_23_MK03_C1, "/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK03_C1_stranded.rds")
+expr_score_tib_23_MK03_C1 = readRDS("/DATA/projects/CTCF_Sox2/analysis/expression_score_new/ME20250708_new_expression_score_23_MK03_C1_stranded.rds")
+
+
+
+expr_score_sum_tib_23_MK03_C1 = bootstrap_summary_fun_str(expr_score_tib_23_MK03_C1,
+                                           score_column = "expr_score_window",
+                                           conf_int = 0.95)
+
+#calculate actual expr score (for filtering # of ints per window)
+expr_score_real_23_MK03_C1_str =
+  expr_score_function_new_weigh_stranded(tib_filtered_FACS_vals_comb,
+                                binsize = BinSize,
+                                N_bins_window = 10,
+                                calculation_window =  prange_zoom,
+                                CL = "23_MK03_C1",
+                                EXP = all_exp)
+  
+expr_score_sum_tib_filt_comb_23_MK03_C1_str = left_join(expr_score_sum_tib_23_MK03_C1,  expr_score_real_23_MK03_C1_str) %>%
+  mutate(expr_score_window_median_sel = case_when(
+    total_ints_window >= min_ints_window ~ expr_score_window_median,
+    .default = NA),
+    expr_score_window_lower_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_lower,
+      .default = NA),
+    expr_score_window_upper_sel = case_when(
+      total_ints_window >= min_ints_window ~ expr_score_window_upper,
+      .default = NA))
+```
+
+```{r}
+pExpr_23_MK03_C1_str =
+ggplot(expr_score_sum_tib_filt_comb_23_MK03_C1_str, aes(x = mid_interval,  col = strand, fill = strand, linetype = strand)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel)) +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, NA)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom') +
+  theme(axis.title.y=element_blank())
+
+pExpr_23_MK03_C1_str
+```
+
+## plot together
+```{r Figure S2F, S2G, S2H, S2I}
+expr_score_sum_per_cl_str = bind_rows(`23_34A` = expr_score_sum_tib_filt_comb_23_34A_str, 
+                                  `23_MK01_C5` = expr_score_sum_tib_filt_comb_23_MK01_C5_str, 
+                                  `23_MK02_C2` = expr_score_sum_tib_filt_comb_23_MK02_C2_str,
+                                  `23_MK03_C1` = expr_score_sum_tib_filt_comb_23_MK03_C1_str,
+                                  .id = 'cell_line') %>%
+  mutate(cell_line = factor(cell_line, levels = c("23_34A", "23_MK01_C5", "23_MK02_C2", "23_MK03_C1")))
+
+ 
+# Figure S2F, S2G, S2H, S2I expression scores per strand
+expr_score_sum_per_cl_str %>%
+  ggplot(aes(x = mid_interval)) +
+  facet_grid(.~ factor(cell_line, levels = c("23_34A", "23_MK01_C5", "23_MK02_C2", "23_MK03_C1"))) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    #geom_vline(data = LP_tib_for_plot, aes(xintercept = start), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+  
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = strand), alpha = 0.2) +
+  # geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = strand), linewidth = 0.6) +
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, NA)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom')
+
+
+# Figure S2F, S2G, S2H, S2I expression scores per strand
+expr_score_sum_per_cl_str %>%
+  ggplot(aes(x = mid_interval)) +
+  facet_grid(. ~ strand) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    # annotate LP's
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    #geom_vline(xintercept = start(landingPad_8), col = 'darkgrey'),
+    #geom_vline(data = LP_tib_for_plot, aes(xintercept = start), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = cell_line), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = cell_line), linewidth = 0.6) +
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, NA)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom') +
+  col_scale_MK_CL
+```
+
+
+```{r Figure 2F}
+expr_score_sum_per_cl_str %>%
+  filter(cell_line %in% c("23_34A", "23_MK03_C1")) %>%
+  ggplot(aes(x = mid_interval)) +
+  facet_grid(. ~ strand) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    # annotate LP's
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    #geom_vline(xintercept = start(landingPad_8), col = 'darkgrey'),
+    #geom_vline(data = LP_tib_for_plot, aes(xintercept = start), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = cell_line), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = cell_line), linewidth = 0.6) +
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 26e3)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom') +
+  col_scale_MK_CL
+```
+
+
+```{r Figure 2G}
+expr_score_sum_per_cl_str %>%
+  filter(cell_line %in% c("23_34A", "23_MK01_C5")) %>%
+  ggplot(aes(x = mid_interval)) +
+  facet_grid(. ~ strand) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    # annotate LP's
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    #geom_vline(xintercept = start(landingPad_8), col = 'darkgrey'),
+    #geom_vline(data = LP_tib_for_plot, aes(xintercept = start), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = cell_line), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = cell_line), linewidth = 0.6) +
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 26e3)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom') +
+  col_scale_MK_CL
+```
+
+```{r Figure 2H}
+expr_score_sum_per_cl_str %>%
+  filter(cell_line %in% c("23_34A", "23_MK02_C2")) %>%
+  ggplot(aes(x = mid_interval)) +
+  facet_grid(. ~ strand) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    # annotate LP's
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey'),
+    #geom_vline(xintercept = start(landingPad_8), col = 'darkgrey'),
+    #geom_vline(data = LP_tib_for_plot, aes(xintercept = start), col = 'darkgrey'),
+    geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted')
+  ) +
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = cell_line), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = cell_line), linewidth = 0.6) +
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_zoom_paper, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 26e3)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'bottom') +
+  col_scale_MK_CL
+```
+
+# Hopping bias due to CBS inserts
+- CBS inserts causes different hopping distributions
+- use control sorted integrations for LP-116 kb 
+
+## reorder cell lines for plotting
+```{r}
+# add factor and levels for ordering
+tib_filtered_curated_strict = tib_filtered_curated_strict %>% 
+  mutate(cell_line = factor(cell_line, levels = c("23_34A", "23_MK03_C1", "23_MK01_C5", "23_MK02_C2")))
+```
+
+## LP-116kb 
+```{r}
+# count 1MB to the right and left of the LP, calculate fraction over total for each
+tib_ctrl_fract_tot = tib_filtered_curated_strict %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(landingPad_23)-1e6) & start <= start(landingPad_23)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+  
+# coordinate of the launch pad (numeric)
+lp_coord <- start(landingPad_23)
+
+# count upstream and downstream separately
+tib_ctrl_fract_split <- tib_filtered_curated_strict %>%
+  filter(population == "ctrl",
+         launch_pad_location == "-116 kb",
+         chr == "chr3",
+         hopped,
+         start >= (lp_coord - 1e6),
+         start <= (lp_coord + 1e6)) %>%
+  mutate(region = case_when(
+    start < lp_coord ~ "upstream",
+    start > lp_coord ~ "downstream",
+    TRUE ~ "at_LP"
+  )) %>%
+  group_by(cell_line, region) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  # join with total counts
+  left_join(tib_ctrl_fract_tot, by = "cell_line") %>%
+  mutate(frac = n / total_n)
+
+tib_ctrl_fract_split
+```
+
+### Function to calculate p-value fisher test
+```{r}
+# Make a helper function: build a 2x2 table and run Fisher’s test
+compare_to_control <- function(df, test_line, control_line = "23_34A") {
+  sub <- df %>%
+    filter(cell_line %in% c(control_line, test_line)) %>%
+    select(cell_line, region, n) %>%
+    pivot_wider(names_from = region, values_from = n)
+  
+  mat <- as.matrix(sub[, c("upstream", "downstream")])
+  rownames(mat) <- sub$cell_line
+  
+  res <- fisher.test(mat)
+  tibble(test_line = test_line,
+         p_value = res$p.value,
+         odds_ratio = res$estimate)
+}
+
+# Run for each MK line
+results <- map_dfr(c("23_MK01_C5", "23_MK02_C2", "23_MK03_C1"),
+                   ~compare_to_control(tib_ctrl_fract_split, .x))
+
+results
+```
+**Conclusion:**
+MK01: odds ratio 2.73 → significantly more downstream integrations than control (p ≈ 1.8e-9).
+MK02: odds ratio 0.38 → significantly more upstream integrations than control (p ≈ 1.8e-17).
+MK03: odds ratio 2.0 → significantly more downstream integrations than control (p ≈ 9.9e-10).
+So compared to 23_34A, the MK lines show skewed distributions, but in opposite directions for MK02
+
+### Plot results - Figure 6D
+```{r figure 6D}
+ggplot(tib_ctrl_fract_split,
+       aes(x = cell_line, y = frac, fill = region)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange")) +
+  ylab("Fraction of integrations") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+```{r figure 6D with pvalues}
+# Prep results for plotting (add significance stars)
+results <- results %>%
+  mutate(sig = case_when(
+    p_value < 1e-10 ~ "***",
+    p_value < 1e-5  ~ "**",
+    p_value < 0.01  ~ "*",
+    TRUE            ~ "ns"
+  ))
+
+# Fraction barplot
+p <- ggplot(tib_ctrl_fract_split,
+            aes(x = cell_line, y = frac, fill = region)) +
+  geom_col(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange")) +
+  ylab("Fraction of integrations (±1 Mb)") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Add significance annotations comparing to 23_34A
+p + geom_signif(
+      comparisons = list(c("23_34A", "23_MK03_C1"),
+                         c("23_34A", "23_MK01_C5"),
+                         c("23_34A", "23_MK02_C2")),
+      annotations = results$p_value ,
+      y_position = c(1.05, 1.12, 1.19),  # adjust so stars are nicely spaced above bars
+      tip_length = 0.01
+    )
+```
+
+### Fraction of integrations in Sox2-SCR interval - Figure S5G
+```{r Figure S5G}
+
+tib_ctrl_fract_tot_LP116 = tib_filtered_curated_strict %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(landingPad_23)-1e6) & start <= start(landingPad_23)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+
+tib_ctrl_fract_Sox2_SCR_LP116 = tib_filtered_curated_strict %>% 
+  filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (end(Sox2_gene)) & start <= start(enhancer)) %>%
+  group_by(cell_line) %>% summarise(Sox2_SCR_n = n()) %>% left_join(tib_ctrl_fract_tot_LP116) %>%
+  mutate(fract_interval = Sox2_SCR_n/total_n)
+
+kable(tib_ctrl_fract_Sox2_SCR_LP116)
+```
+
+```{r Figure S5G plot}
+# count 1MB to the left of Sox2 gene, than Sox2-SCR, 1Mb end of SCR, calculate fraction over total
+tib_ctrl_fract_tot = tib_filtered_curated_strict %>% filter(population == "ctrl" & launch_pad_location == "-116 kb" & chr == "chr3" & hopped & start >= (start(Sox2_gene)-1e6) & start <= end(enhancer)+1e6) %>%
+  group_by(cell_line) %>% summarise(total_n = n())
+  
+# coordinate of the launch pad (numeric)
+Sox2_coord <- start(Sox2_gene)
+SCR_coord <- end(enhancer)
+
+# count upstream and downstream separately
+tib_ctrl_fract_split <- tib_filtered_curated_strict %>%
+  filter(population == "ctrl",
+         launch_pad_location == "-116 kb",
+         chr == "chr3",
+         hopped,
+         start >= (Sox2_coord - 1e6),
+         start <= (SCR_coord + 1e6)) %>%
+  mutate(region = case_when(
+    start < Sox2_coord ~ "upstream",
+    start > end(Sox2_gene) & start < start(enhancer) ~ "Sox2_SCR",
+    start > SCR_coord ~ "downstream",
+    TRUE ~ "in_Sox2_or_SCR"
+  )) %>%
+  group_by(cell_line, region) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  # join with total counts
+  left_join(tib_ctrl_fract_tot, by = "cell_line") %>%
+  mutate(frac = n / total_n)
+
+tib_ctrl_fract_split %>% 
+  ggplot(aes(x = cell_line, y = frac, fill = region)) +
+  geom_bar(stat= "identity") +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c("upstream" = "skyblue", "downstream" = "orange", "Sox2_SCR" = "purple", "in_Sox2_or_SCR" = "grey")) +
+  ylab("Fraction of integrations") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# add % to plot
+tib_ctrl_fract_split %>% 
+  ggplot(aes(x = cell_line, y = frac, fill = region)) +
+  geom_bar(stat = "identity", position = "stack") +
+  geom_text(aes(label = scales::percent(frac, accuracy = 1)),
+            position = position_stack(vjust = 0.5),
+            color = "black",
+            size = 3) +
+  scale_y_continuous(labels = scales::percent) +
+  scale_fill_manual(values = c(
+    "upstream" = "skyblue",
+    "downstream" = "orange",
+    "Sox2_SCR" = "purple",
+    "in_Sox2_or_SCR" = "grey"
+  )) +
+  ylab("Fraction of integrations (±1 Mb)") +
+  xlab("Cell line") +
+  theme_bw() +
+  theme(legend.position = "bottom") +
+  ggtitle("Fraction of integrations from LP-116 kb") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+## Plot beeswarms
+### Sox2P - Figure S1B
+```{r Figure S1B}
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+#Rep 1
+p23_34A_bs_rep1 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep1" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_34A",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_34A_bs_rep1
+
+#Rep 2
+p23_34A_bs_rep2 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep2" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_34A",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_34A_bs_rep2
+
+#Rep 3
+p23_34A_bs_rep3 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep3" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_34A",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_34A_bs_rep3
+
+#Rep 4
+p23_34A_bs_rep4 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep4" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_34A",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_34A_bs_rep4
+
+plot_grid(p23_34A_bs_rep1, p23_34A_bs_rep2, p23_34A_bs_rep3, p23_34A_bs_rep4, ncol = 2)
+```
+
+### 3xCBS_Sox2P_Fw
+```{r}
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+#Rep 1
+p23_MK01_bs_rep1 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep1" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_MK01_C5",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_MK01_bs_rep1
+
+#Rep 2
+p23_MK01_bs_rep2 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep2" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_MK01_C5",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_MK01_bs_rep2
+
+plot_grid(p23_MK01_bs_rep1, p23_MK01_bs_rep2, ncol = 1)
+```
+
+### 3xCBS_Sox2P_Rv
+```{r}
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+#Rep 1
+p23_MK02_bs_rep1 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep1" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_MK02_C2",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_MK02_bs_rep1
+
+#Rep 2
+p23_MK02_bs_rep2 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep2" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_MK02_C2",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_MK02_bs_rep2
+
+plot_grid(p23_MK02_bs_rep1, p23_MK02_bs_rep2, ncol = 1)
+```
+
+### 1xCBS_Sox2P_Fw
+```{r}
+all_exp = unique(tib_filtered_curated_strict$experiment)
+
+#Rep 1
+p23_MK03_bs_rep1 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep1" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_MK03_C1",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_MK03_bs_rep1
+
+#Rep 2
+p23_MK03_bs_rep2 =
+plot_beeswarm_only(TIB = tib_filtered_curated_strict %>% 
+                   filter(hopped & chr == "chr3" & replicate == "rep2" & population != "P0") %>% droplevels(),
+                   EXP = all_exp,
+                   CL = "23_MK03_C1",
+                   PLOT_ANNOT = T,
+                   PLOT_CTCF = F,
+                   P_RANGE = prange_zoom_paper,
+                   POINT_SIZE = 1.5)
+p23_MK03_bs_rep2
+
+plot_grid(p23_MK03_bs_rep1, p23_MK03_bs_rep2, ncol = 1)
+```
+
+## Correlation of replicates
+### Sox2P - Figure S1C
+```{r Correlation of replicates for 23_34A Figure S1C}
+bin_borders = seq(from = prange_zoom_paper[1], to = prange_zoom_paper[2], by = 5000)
+bin_borders_tib = tibble(start_window = bin_borders) %>%
+  mutate(interval_number = row_number())
+
+#count the number of integrations per cell line, population and bin
+N_ints_pop_tib = tib_filtered_curated_strict %>% 
+  filter(cell_line == "23_34A" & hopped) %>%
+  group_by(experiment, population) %>%
+  summarize(N_ints_pop = n())
+
+N_ints_bins_tmp = tib_filtered_curated_strict %>% 
+  filter(chr == "chr3" & cell_line == "23_34A" & hopped) %>%
+  mutate(interval_number = findInterval(start, bin_borders)) %>%
+  group_by(experiment, population, interval_number) %>%
+  summarize(N_ints_bin = n()) %>%
+  left_join(N_ints_pop_tib) %>%
+  mutate(fract_ints_bin = N_ints_bin/N_ints_pop)
+
+frac_ints_bins_wide = N_ints_bins_tmp %>%
+  pivot_wider(id_cols = c(population, interval_number),
+              names_from = experiment,
+              values_from = fract_ints_bin,
+              values_fill = 0)
+
+frac_ints_bins_wide_full = 
+  #make all combinations of interval_number and population
+  expand_grid(interval_number = c(0, bin_borders_tib$interval_number),
+              population = unique(N_ints_bins_tmp$population)) %>%
+  #add the fractions and replace all NAs with zeros
+  left_join(frac_ints_bins_wide) %>%
+  mutate(across(everything(), ~replace_na(.x, 0))) 
+
+#plot pairs
+filter(frac_ints_bins_wide_full, 
+               population != 'ctrl' & 
+               !interval_number %in% c(0, max(interval_number))) %>% #remove the outer bins, which are bigger than 5kb
+  dplyr::rename(replicate_1 = E2138,
+                replicate_2 = E2282,
+                replicate_3 = E2285,
+                replicate_4 = E2712) %>%
+  mutate(replicate_4 = case_when(population %in% c("P1", "P2", "P6") ~ NA, #replicate 4 only contained P3-P5
+                                 .default = replicate_4)) %>%
+  ggpairs(aes(col = population),
+        columns = paste0('replicate_',1:4),
+        lower = list(continuous = "points", stroke = NA), #, mapping=aes(color=population
+        upper = list(continuous = wrap("cor", method = "spearman"))) +
+  theme_bw(base_size = 12) 
+```
+
+### 3xCBS_Fw_Sox2P - Figure S1E
+```{r Correlation of replicates for 23_MK01_C5 Figure S1E}
+bin_borders = seq(from = prange_zoom_paper[1], to = prange_zoom_paper[2], by = 5000)
+bin_borders_tib = tibble(start_window = bin_borders) %>%
+  mutate(interval_number = row_number())
+
+#count the number of integrations per cell line, population and bin
+N_ints_pop_tib = tib_filtered_curated_strict %>% 
+  filter(cell_line == "23_MK01_C5" & hopped) %>%
+  group_by(experiment, population) %>%
+  summarize(N_ints_pop = n())
+
+N_ints_bins_tmp = tib_filtered_curated_strict %>% 
+  filter(chr == "chr3" & cell_line == "23_MK01_C5" & hopped) %>%
+  mutate(interval_number = findInterval(start, bin_borders)) %>%
+  group_by(experiment, population, interval_number) %>%
+  summarize(N_ints_bin = n()) %>%
+  left_join(N_ints_pop_tib) %>%
+  mutate(fract_ints_bin = N_ints_bin/N_ints_pop)
+
+frac_ints_bins_wide = N_ints_bins_tmp %>%
+  pivot_wider(id_cols = c(population, interval_number),
+              names_from = experiment,
+              values_from = fract_ints_bin,
+              values_fill = 0)
+
+frac_ints_bins_wide_full = 
+  #make all combinations of interval_number and population
+  expand_grid(interval_number = c(0, bin_borders_tib$interval_number),
+              population = unique(N_ints_bins_tmp$population)) %>%
+  #add the fractions and replace all NAs with zeros
+  left_join(frac_ints_bins_wide) %>%
+  mutate(across(everything(), ~replace_na(.x, 0))) 
+
+#plot pairs
+pMK01_rep_cor =
+filter(frac_ints_bins_wide_full, 
+               population != 'ctrl' & 
+               !interval_number %in% c(0, max(interval_number))) %>% #remove the outer bins, which are bigger than 5kb
+  dplyr::rename(replicate_1 = E2285,
+                replicate_2 = E2401) %>%
+  ggpairs(aes(col = population),
+        columns = paste0('replicate_',1:2),
+        lower = list(continuous = "points", stroke = NA), #, mapping=aes(color=population
+        upper = list(continuous = wrap("cor", method = "spearman"))) +
+  theme_bw(base_size = 12) 
+
+pMK01_rep_cor
+```
+
+### 3xCBS_Rv_Sox2P - Figure S1E
+```{r Correlation of replicates for 23_MK02_C2 - Figure S1E}
+bin_borders = seq(from = prange_zoom_paper[1], to = prange_zoom_paper[2], by = 5000)
+bin_borders_tib = tibble(start_window = bin_borders) %>%
+  mutate(interval_number = row_number())
+
+#count the number of integrations per cell line, population and bin
+N_ints_pop_tib = tib_filtered_curated_strict %>% 
+  filter(cell_line == "23_MK02_C2" & hopped) %>%
+  group_by(experiment, population) %>%
+  summarize(N_ints_pop = n())
+
+N_ints_bins_tmp = tib_filtered_curated_strict %>% 
+  filter(chr == "chr3" & cell_line == "23_MK02_C2" & hopped) %>%
+  mutate(interval_number = findInterval(start, bin_borders)) %>%
+  group_by(experiment, population, interval_number) %>%
+  summarize(N_ints_bin = n()) %>%
+  left_join(N_ints_pop_tib) %>%
+  mutate(fract_ints_bin = N_ints_bin/N_ints_pop)
+
+frac_ints_bins_wide = N_ints_bins_tmp %>%
+  pivot_wider(id_cols = c(population, interval_number),
+              names_from = experiment,
+              values_from = fract_ints_bin,
+              values_fill = 0)
+
+frac_ints_bins_wide_full = 
+  #make all combinations of interval_number and population
+  expand_grid(interval_number = c(0, bin_borders_tib$interval_number),
+              population = unique(N_ints_bins_tmp$population)) %>%
+  #add the fractions and replace all NAs with zeros
+  left_join(frac_ints_bins_wide) %>%
+  mutate(across(everything(), ~replace_na(.x, 0))) 
+
+#plot pairs
+pMK02_rep_cor =
+filter(frac_ints_bins_wide_full, 
+               population != 'ctrl' & 
+               !interval_number %in% c(0, max(interval_number))) %>% #remove the outer bins, which are bigger than 5kb
+  dplyr::rename(replicate_1 = E2285,
+                replicate_2 = E2401) %>%
+  ggpairs(aes(col = population),
+        columns = paste0('replicate_',1:2),
+        lower = list(continuous = "points", stroke = NA), #, mapping=aes(color=population
+        upper = list(continuous = wrap("cor", method = "spearman"))) +
+  theme_bw(base_size = 12) 
+
+pMK02_rep_cor
+```
+
+
+### 1xCBS_Fw_Sox2P - Figure S1E
+```{r Correlation of replicates for 23_MK03_C1 - Figure S1E}
+bin_borders = seq(from = prange_zoom_paper[1], to = prange_zoom_paper[2], by = 5000)
+bin_borders_tib = tibble(start_window = bin_borders) %>%
+  mutate(interval_number = row_number())
+
+#count the number of integrations per cell line, population and bin
+N_ints_pop_tib = tib_filtered_curated_strict %>% 
+  filter(cell_line == "23_MK03_C1" & hopped) %>%
+  group_by(experiment, population) %>%
+  summarize(N_ints_pop = n())
+
+N_ints_bins_tmp = tib_filtered_curated_strict %>% 
+  filter(chr == "chr3" & cell_line == "23_MK03_C1" & hopped) %>%
+  mutate(interval_number = findInterval(start, bin_borders)) %>%
+  group_by(experiment, population, interval_number) %>%
+  summarize(N_ints_bin = n()) %>%
+  left_join(N_ints_pop_tib) %>%
+  mutate(fract_ints_bin = N_ints_bin/N_ints_pop)
+
+frac_ints_bins_wide = N_ints_bins_tmp %>%
+  pivot_wider(id_cols = c(population, interval_number),
+              names_from = experiment,
+              values_from = fract_ints_bin,
+              values_fill = 0)
+
+frac_ints_bins_wide_full = 
+  #make all combinations of interval_number and population
+  expand_grid(interval_number = c(0, bin_borders_tib$interval_number),
+              population = unique(N_ints_bins_tmp$population)) %>%
+  #add the fractions and replace all NAs with zeros
+  left_join(frac_ints_bins_wide) %>%
+  mutate(across(everything(), ~replace_na(.x, 0))) 
+
+#plot pairs
+pMK03_rep_cor =
+filter(frac_ints_bins_wide_full, 
+               population != 'ctrl' & 
+               !interval_number %in% c(0, max(interval_number))) %>% #remove the outer bins, which are bigger than 5kb
+  dplyr::rename(replicate_1 = E2285,
+                replicate_2 = E2401) %>%
+  ggpairs(aes(col = population),
+        columns = paste0('replicate_',1:2),
+        lower = list(continuous = "points", stroke = NA), #, mapping=aes(color=population
+        upper = list(continuous = wrap("cor", method = "spearman"))) +
+  theme_bw(base_size = 12) 
+
+pMK03_rep_cor
+```
+
+
+# Annotate weak enhancer upstream of SCR
+Load ChIP seq tracks of active marks (H3K27Ac, P300) and pluripotency TFs (SOX2, NANOG, OCT4) and plot together with expression score for each construct. 
+## Load ChIP-seq datasets datasets
+```{r load ChIP-seq datasets}
+# ChIP-seq datasets used can be found in Table S6
+
+paths_ext_data_files_figure = c(
+  H3K27ac = '/DATA/usr/c.moene/public_data/ChIP/Histons/H3K27ac_ENCFF583WVZ_signal_pval.bigWig',
+  P300_serum = '/DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/p300_2821_Creyghton.bw',
+  CTCF = '/DATA/projects/Sox2/CTCF_ChIP_analysis/results/bigwig/6764_2_ME_E2_CGATGT_S2_R1_001.bw', #new, aligned to mm10 only
+  SOX2 = '/DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/SOX2_73602_Chronis.bw',
+  OCT4 = '/DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/OCT4_73603_Chronis.bw',
+  NANOG = '/DATA/shared/projects/TRIP/TRIP_TF_REPORTERS/annotation/cistrome_v2.0/mm10/bigWig/NANOG_73565_Chronis.bw')
+
+
+```
+## Plot expression scores facet by strand 
+
+```{r Stranded expression scores for all constructs}
+
+# Sox2P - pME034
+pExpr_23_34A_str = 
+ggplot(expr_score_sum_tib_filt_comb_23_34A_str, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    #geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = strand), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = "orange") +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = strand)) +
+ 
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_ChIP, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'top')
+
+pExpr_23_34A_str
+
+
+#3xCBS_Fw_Sox2P - MK01
+pExpr_23_MK01_C5_str =
+ggplot(expr_score_sum_tib_filt_comb_23_MK01_C5_str, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    #geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted'),
+    #geom_vline(xintercept = start(landingPad_8), col = 'darkgrey'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = strand), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = strand)) +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_ChIP, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'top') +
+  theme(axis.title.y=element_blank())
+
+pExpr_23_MK01_C5_str
+
+
+#3xCBS_Rv_Sox2P - MK02
+pExpr_23_MK02_C2_str =
+ggplot(expr_score_sum_tib_filt_comb_23_MK02_C2_str, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    #geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = strand), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = strand)) +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_ChIP, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'top') +
+  theme(axis.title.y=element_blank())
+
+pExpr_23_MK02_C2_str
+
+
+#1xCBS_Fw_Sox2P - MK03
+pExpr_23_MK03_C1_str =
+ggplot(expr_score_sum_tib_filt_comb_23_MK03_C1_str, aes(x = mid_interval)) +
+  # annotate enhancer
+  list(
+    annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = brown),
+    geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = brown),
+    # annotate gene
+    annotate("rect", xmin = start(Sox2_gene), xmax = end(Sox2_gene), ymin = -Inf, ymax = Inf,alpha = .2, fill = 'red'),
+    #geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey',linetype = 'dotted'),
+    geom_vline(xintercept = c(start(Sox2_gene), end(Sox2_gene)), col = 'red'),
+    geom_vline(xintercept = start(landingPad_23), col = 'darkgrey')
+  ) +
+
+  ## plot the confidence interval based on the resampled data
+  geom_ribbon(aes(ymin = expr_score_window_lower_sel, ymax = expr_score_window_upper_sel, fill = strand), alpha = 0.2) +
+  #geom_line( aes(y = expr_score_window_mean), col = 'orange') +
+  ## plot the median based on the resampled data
+  geom_line(aes(y = expr_score_window_median_sel, col = strand)) +
+
+  #axes
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 3), labels = scales::unit_format(scale = 1E-6, accuracy = 0.01, unit=NULL),
+                     limits=prange_ChIP, expand=c(0,0)) +
+  scale_y_continuous(expand=expansion(mult = c(0, 0.05)),
+                     breaks = scales::pretty_breaks(n=6),
+                     limits = c(0, 25500)) +
+  labs(x='Genomic coordinate (Mb)',y='expression score') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = 'top') +
+  theme(axis.title.y=element_blank())
+
+pExpr_23_MK03_C1_str
+```
+
+
+## Figure S2F-I, Plot dataset
+```{r Figure S2F-I Plot expression scores with ChIP seq data}
+library(Signac)
+
+prange_ChIP_paper_gr = GRanges(seqnames = "chr3", IRanges(start = prange_ChIP[1], end = prange_ChIP[2]))
+
+# Plot for figure
+ext_data_files_ls_figure = split(unname(paths_ext_data_files_figure), names(paths_ext_data_files_figure))
+
+#Plot for pME034
+cowplot::plot_grid(plotlist = c(list(pExpr_23_34A_str,       
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[1], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[2], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[5], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[6], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[4], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[3], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)))),
+                   ncol = 1, align="v", axis="lr", rel_heights = c(1.5, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3))
+
+
+#Plot for MK01
+cowplot::plot_grid(plotlist = c(list(pExpr_23_MK01_C5_str,       
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[1], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[2], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[5], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[6], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[4], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[3], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)))),
+                   ncol = 1, align="v", axis="lr", rel_heights = c(1.5, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3))
+
+
+#Plot for MK02
+cowplot::plot_grid(plotlist = c(list(pExpr_23_MK02_C2_str,       
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[1], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[2], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[5], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[6], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[4], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[3], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)))),
+                   ncol = 1, align="v", axis="lr", rel_heights = c(1.5, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3))
+
+
+#Plot for MK03
+cowplot::plot_grid(plotlist = c(list(pExpr_23_MK03_C1_str,       
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[1], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[2], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[5], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[6], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[4], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)),
+                                     BigwigTrack(prange_ChIP_paper_gr, ext_data_files_ls_figure[3], smooth = 500) + 
+                                       scale_x_continuous(breaks = scales::pretty_breaks(n = 3), expand= c(0,0)))),
+                   ncol = 1, align="v", axis="lr", rel_heights = c(1.5, 0.3, 0.3, 0.3, 0.3, 0.3, 0.3))
+
+```

@@ -1,0 +1,521 @@
+---
+title: "me20250709_E2296_FACS_timecourse"
+author: "Mathias"
+date: "2025-07-08"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+# Aim 
+In a previous experiment we flipped MK constructs into LP8 and LP23 (E2224). During the first FACS measurements we saw some clonal variation between the same constructs, this can only be epigenetic since the clones have been genotyped. We had some indication that after we brought the same clone in culture again, it chaged expression. 
+Therefore we were wondering if the reporter expression of clones changes over time. 
+We got the following cells in culture
+8.34.8 - 2 x vials frozen on 09/05 *these contained only 1 mill per vial so I used two)
+8_MK1_C1 - vial frozen on 19/6 (cryobase) (new)
+8_MK1_C2 - vial frozen on 19/6 (cryobase) (new)
+8_MK2_C1 - vial frozen on 24/04 (old)
+8_MK2_C2 - vial frozen on 24/04 (old)
+8_MK2_C4 - vial frozen on 24/04 (old)
+8_MK2_C5 - vial frozen on 03/04 (only one vial left now) (old)
+8_MK2_C6 - vial frozen on 24/04 (old)
+8_MK2_C5 - vial frozen on 19/6 (cryobase) (new)
+
+Compare the measurements over time and see if they change
+
+# Method
+- load data into R (gate for single cells in FlowJo)
+- curate dataset, annotate
+- merge with FACS metadata
+- substract autofluorescence from each WT measurement day
+- normalize to GFP and to 8.38.8 control measurements per day
+
+# Set-up
+##Libraries
+Load the libraries and set the parameters.
+```{r}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+# library(dtplyr)
+library(dplyr)
+# library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+# library(plotly)
+library(readxl)
+library(ggpubr)
+library(ggpmisc)
+library(ggridges)
+library(import)
+library(ggh4x)
+library(rstatix)
+# library(flowCore)
+import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+library(cowplot)
+library(GENOVA)
+library(Signac)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+
+```{r paths_parameters}
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_3/analysis_FACS_timecourse_", datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+library(knitr)
+opts_chunk$set(
+               cache = T,
+               message = F, 
+               warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 600,
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+
+## Load fcs files
+```{r}
+path_fcs_files_E2296_T1 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2296/T1"
+path_fcs_files_E2296_T3 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2296/T3/"
+path_fcs_files_E2296_T5 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2296/T5/"
+path_fcs_files_E2296_T7 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2296/T7/"
+path_fcs_files_E2296_T9 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2296/T9/"
+path_fcs_files_E2296_T11 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2296/T11/"
+
+path_fcs_files_E2296 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2296/all_combined/"
+
+fcs_files_E2296 = dir(path_fcs_files_E2296, full.names = T)
+fcs_files_E2296_nms = str_remove(fcs_files_E2296, "^.*/")
+
+fcs_files_E2296_nms2 = fcs_files_E2296_nms
+```
+#chat gpt
+```{r}
+
+# your raw filenames
+nms <- fcs_files_E2296_nms
+
+# 1) pull out the three-digit index before “_Single Cells.fcs”
+index <- str_extract(nms, "(?<=_)(\\d{3})(?=_Single Cells\\.fcs)")
+
+# 2) pull out any “t=N” timepoint, default to 1 if missing
+timepoint <- str_extract(nms, "(?<=t=)\\d+")
+timepoint[is.na(timepoint)] <- "1"
+
+# 3) strip off everything up to the clone name
+clone_raw <- str_replace(nms, "^.*#8_flip_", "")
+clone_raw <- str_replace(clone_raw, "^.*timeline_[^_]+_", "")
+
+# 4) remove the “ t=N” bit
+clone_raw <- str_replace(clone_raw, " t=\\d+", "")
+
+# 5) remove the “_<index>_Single Cells.fcs” suffix
+clone <- str_replace(clone_raw,
+                     paste0("_", index, "_Single Cells\\.fcs$"),
+                     "")
+
+# 6) assemble “clone_index” as your sample IDs
+sample_id <- paste0(clone, "_", index)
+
+# 7) ensure uniqueness (in case of exact duplicates)
+sample_id <- make.unique(sample_id)
+
+# view
+sample_id
+
+```
+
+
+```{r}
+# assign our cleaned sample IDs to the file vector and read into a flowSet
+names(fcs_files_E2296) <- sample_id
+flowset_E2296 <- read.flowSet(files = fcs_files_E2296,
+                              alter.names = TRUE,
+                              truncate_max_range = FALSE)
+sampleNames(flowset_E2296) <- sample_id
+pData(flowset_E2296)$name <- sample_id
+
+# subset only the fluorescence + scatter channels and rename
+flowset_fluo_E2296 <- flowset_E2296[, c(
+  "BL.B..530_30.A",  # GFP
+  "YG.D..610_20.A",  # mCherry
+  "V.F..450_50.A",   # mTurq
+  "FSC.A", "SSC.A"
+)]
+colnames(flowset_fluo_E2296) <- c("GFP", "mCherry", "mTurq", "FSC", "SSC")
+
+# build annotation tibble
+tib_annot_E2296 <- tibble(
+  sample_name = sample_id,
+  clone       = clone,
+  timepoint   = factor(timepoint, levels = c("1", "3", "5", "7", "9", "11"),
+                       labels = c("T1", "T3", "T5", "T7", "T9", "T11"))) %>%
+  mutate(cryo = case_when(grepl("CTRL", sample_name) ~ "cryo",
+                                grepl("old", sample_name) ~ "old",
+                                grepl("new_cryo", sample_name) ~ "new_cryo",
+                                .default = "other"),
+         population = case_when(grepl("pMK1", sample_name) ~ "MK01",
+                                grepl("pMK2", sample_name) ~ "MK02",
+                                grepl("pMK3", sample_name) ~ "MK03",
+                                grepl("WT", sample_name) ~ "ctrl",
+                                grepl("8_34_8", sample_name) ~ "ctrl"),
+         cell_line = case_when(str_detect(clone, "^8_34_8")      ~ "8_34_8",
+                               str_detect(clone, "#8_pMK1_C1")     ~ "8_MK01_C1",
+                               str_detect(clone, "#8_pMK1_C2")     ~ "8_MK01_C2",
+                               str_detect(clone, "#8_pMK2_C1")     ~ "8_MK02_C1",
+                               str_detect(clone, "#8_pMK2_C2")     ~ "8_MK02_C2",
+                               str_detect(clone, "#8_pMK2_C4")     ~ "8_MK02_C4",
+                               str_detect(clone, "#8_pMK2_C5")     ~ "8_MK02_C5",
+                               str_detect(clone, "#8_pMK2_C6")     ~ "8_MK02_C6",
+                               str_detect(clone, "^WT")          ~ "WT",
+                               TRUE ~ NA_character_),
+         cell_line_TP = paste0(cell_line, "_", timepoint),
+         experiment = "E2296")
+
+
+# merge annotation into the flowSet phenotype data
+pheno_data_tib_E2296 = left_join(pData(flowset_fluo_E2296), tib_annot_E2296, join_by(name == sample_name)) 
+rownames(pheno_data_tib_E2296) = pheno_data_tib_E2296$name
+pData(flowset_fluo_E2296) = pheno_data_tib_E2296
+```
+
+## calculate expression
+For now I calculate the median expression without subtracting any autofluorescence
+```{r median_E2296}
+
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2296, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+median_mTurq = sapply(1:length(flowset_fluo_E2296), function(i){
+  median(flowCore::exprs(flowset_fluo_E2296[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2296)
+
+median_mCherry = sapply(1:length(flowset_fluo_E2296), function(i){
+  median(flowCore::exprs(flowset_fluo_E2296[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2296)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2296), function(i){
+  median(flowCore::exprs(flowset_fluo_E2296[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2296)
+
+flowCore::pData(flowset_fluo_E2296)$median_mTurq = median_mTurq
+flowCore::pData(flowset_fluo_E2296)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2296)$median_GFP = median_GFP
+
+flowCore::pData(flowset_fluo_E2296)$total_cell_count = total_cell_count
+
+fcs_tib = tibble(flowCore::pData(flowset_fluo_E2296))
+```
+
+# Normalize expression
+```{r normalize_expression_values}
+#subtract autofluorescence, normalize to GFP
+autofluo_tib_comb = fcs_tib  %>%
+  group_by(cell_line, timepoint) %>%
+  filter(cell_line == "WT") %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+           mCherry_WT = mean(median_mCherry),
+            GFP_WT = mean(median_GFP)) %>% 
+  ungroup() %>% 
+  select(-(cell_line))
+
+expression_tib_comb = fcs_tib %>%
+  left_join(autofluo_tib_comb, join_by(timepoint)) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 8_34_8_ctrl per timepoint (another alternative could be to normalize over the median of the 8_34_8 measurements)
+standard_tib = expression_tib_comb %>%
+  group_by(cell_line, timepoint) %>%
+  filter(cell_line == "8_34_8") %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+           mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor)) %>%
+  ungroup() %>% 
+  select(-(cell_line))
+
+expression_tib_comb = expression_tib_comb %>%
+  left_join(standard_tib, join_by(timepoint)) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+``` 
+
+## Color setup
+```{r}
+
+myCols_insert_population <- c(
+  `MK01` = '#1b9e77',   # Teal green
+  `MK02` = '#d95f02',   # Strong orange
+  `MK03` = '#7570b3',   # Purple
+  `WT` = 'black', # Black for wild type
+  "ctrl" = "black" # Black for ctrl
+)
+
+col_scale_MK_pop <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_population,
+  aesthetics = c("colour", "fill")
+)
+
+## SCR
+brown = "#ffb000"
+```
+
+
+## Plot clones
+```{r expression of clones in timecourse}
+
+pTimecourse_mTurq = 
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT") %>%
+  #plotting
+  ggplot(aes(x = timepoint, y = rel_mTurq, col = timepoint)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ cell_line  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2296") +
+  ylab("relative reporter expression")
+  
+
+# Relative mCherry
+pTimecourse_mCherry = 
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT") %>%
+  #plotting
+  ggplot(aes(x = timepoint, y = rel_mCherry, col = timepoint)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ cell_line  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E2296") +
+  ylab("relative Sox2::mCherry expression")
+
+plot_grid(pTimecourse_mTurq, pTimecourse_mCherry, ncol = 1)
+```
+**Conclusion** There is clearly something going on in T3, so discard T3 WT sample. I checked and the mCherry of WT is lower than usual, so if i normlize the MKs to that, everything will be higher. 
+
+## Filter out T3
+```{r expression of clones in timecourse without T3}
+pTimecourse_mTurq_noT3 = 
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  #plotting
+  ggplot(aes(x = timepoint, y = rel_mTurq, col = population)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 1) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ cell_line  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2296") +
+  ylab("relative reporter expression") +
+  col_scale_MK_pop
+
+# Relative mCherry
+pTimecourse_mCherry_noT3 = 
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  #plotting
+  ggplot(aes(x = timepoint, y = rel_mCherry, col = population)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 1) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ cell_line  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, Timecourse E2296") +
+  ylab("relative Sox2::mCherry expression") +
+  col_scale_MK_pop
+
+plot_grid(pTimecourse_mTurq_noT3, pTimecourse_mCherry_noT3, ncol = 1, align = "hv")
+
+#facet by timepoints
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ timepoint  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, Timecourse E2296") +
+  ylab("relative mTurq expression")
+
+
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ timepoint  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, Timecourse E2296") +
+  ylab("relative Sox2::mCherry expression")
+
+
+#Facet for insert
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  #plotting
+  ggplot(aes(x = population, y = rel_mTurq, col = population)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ timepoint  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, Timecourse E2296") +
+  ylab("relative mTurq expression")
+
+filter(expression_tib_comb, total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  #plotting
+  ggplot(aes(x = population, y = rel_mCherry, col = population)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ timepoint  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, Timecourse E2296") +
+  ylab("relative Sox2::mCherry expression")
+
+```
+
+## Paper plot
+```{r}
+pTimecourse_mTurq_noT3_paper =
+expression_tib_comb %>% 
+  filter(total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  group_by(cell_line, timepoint, population) %>% 
+  summarise(mean_rel_mTurq = mean(rel_mTurq),
+            mean_rel_mCh = mean (rel_mCherry)) %>%
+  #plotting
+  ggplot(aes(x = timepoint, y = mean_rel_mTurq, col = population)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.2), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ population+cell_line , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) +
+  ggtitle("Timecourse of reporter expresion in LP-39kb", subtitle = "rel. Sox2P reporter expression") +
+  ylab("relative reporter expression") +
+  col_scale_MK_pop
+
+
+
+pTimecourse_mCh_noT3_paper =
+expression_tib_comb %>% 
+  filter(total_cell_count >= 500 & cell_line != "WT" & timepoint != "T3") %>%
+  group_by(cell_line, timepoint, population) %>% 
+  summarise(mean_rel_mTurq = mean(rel_mTurq),
+            mean_rel_mCh = mean (rel_mCherry)) %>%
+  #plotting
+  ggplot(aes(x = timepoint, y = mean_rel_mCh, col = population)) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.2), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ population+cell_line , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        axis.title.x = element_blank()) +
+  ggtitle("Timecourse of reporter expresion in LP-39kb", subtitle = "rel. Sox2::mCherry expression") +
+  ylab("relative Sox2::mCherry expression") +
+  col_scale_MK_pop
+
+plot_grid(pTimecourse_mTurq_noT3_paper, pTimecourse_mCh_noT3_paper, ncol = 1, align = "hv")
+```
+
+## display as violin plot
+```{r violin plots of clones timecourse}
+
+without_WT_T3 = fcs_tib %>% filter(cell_line != "WT" & timepoint != "T3") %>% pull(name)
+flowset_oi = flowset_fluo_E2296[without_WT_T3]
+
+ggplot(flowset_oi, aes(x = cell_line, y = mTurq, fill = population)) +
+  geom_violin(trim = TRUE, alpha = 0.6) +
+  geom_boxplot(width = 0.1, outlier.shape = NA) +
+  facet_wrap(~ timepoint, scales = "free_y") +
+  scale_y_log10() +
+  theme_classic() +
+  labs(
+    x = "Clone",
+    y = "mTurq (log10)",
+    title = "Distributions of mTurq by clone at each timepoint"
+  ) +
+  theme(
+    axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+    legend.position = "none"
+  ) +
+  col_scale_MK_pop
+```
+

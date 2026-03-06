@@ -1,0 +1,96 @@
+import pandas
+import inspect
+import os
+import re
+
+# plan:
+# parse the reads with Tom's parser
+# run starcode
+# then take the counts to RStudio
+
+filename = inspect.getframeinfo(inspect.currentframe()).filename
+path = os.path.dirname(os.path.abspath(filename))
+
+# now I hardcode the input and output, later I can make a yaml and config file for this 
+outdir = "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2227_genotyping_CTCF_deletion_clones/snakemake_output"
+indir = "/shared/gcf/c.moene/7239/M909_fastq_files"
+
+inlist = ['/'.join((indir, infile)) for infile in os.listdir(indir)]
+
+meta_pd = pandas.read_table("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2227_genotyping_CTCF_deletion_clones/CM20230406_E2227_metadata.tsv",
+                             sep='\t')
+
+
+def get_all(meta_pd, outdir):
+    for name in meta_pd.sample_name:
+        yield('{outdir}/parsed/{name}.barcode.txt'.format(outdir=outdir,
+                                                 name=name))
+        yield('{outdir}/starcode/{name}.starcode0_sequences.txt'.format(outdir=outdir,
+                                                 name=name))
+
+rule getall:
+    input:
+        get_all(meta_pd, outdir)
+
+def get_structure(inlist, meta_pd, wildcards):
+    row = meta_pd[meta_pd.sample_name==wildcards.name]
+    file_list = [file for file in inlist if wildcards.name in file]
+    file_type = row.primers.values[0]
+    if file_type == "DelD":
+        structure = '/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2227_genotyping_CTCF_deletion_clones/CM20230406_structure_delD.txt'
+    elif file_type == "DelE":
+        structure = '/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2227_genotyping_CTCF_deletion_clones/CM20230406_structure_delE.txt'
+    else:
+        structure = ''
+    return([file_list[0],structure])
+
+
+## Here we use Tom's version of cut-adapt to get the amplicon sequence into a txt file (with the readIDs)
+## it also trims the primers and illumina adapters off the sequence (so I could do some QC on these new fastq files later)
+rule parse:
+    input:
+        lambda wildcards: get_structure(inlist, meta_pd, wildcards)
+    params:
+        outdir='{outdir}/parsed',
+        base='{name}'
+    output:
+        R1='{outdir}/parsed/{name}.fastq.gz',
+        bc='{outdir}/parsed/{name}.barcode.txt.gz'
+    shell:
+        "~t.v.schaik/mydata/modules/read-parsing/read_parser.py "
+        "    -b {params.base} -a"
+        "    {input[0]} {input[1]} {params.outdir}"
+
+
+## Starcode needs a file with only the barcodes, so here we unzip the barcode.txt.gz and then extract the column with barcodes
+rule unzip_barcode:
+    input:
+        '{outdir}/parsed/{name}.barcode.txt.gz'
+    output:
+        '{outdir}/parsed/{name}.barcode.txt'
+    shell:
+        "gzip -d {input}"
+
+# write the file with amplicon sequences
+rule write_barcode_file:
+    input:
+        '{outdir}/parsed/{name}.barcode.txt'
+    output:
+        '{outdir}/parsed/{name}.sequences.txt'
+    shell:
+        "awk -F $'\t' '(NR>1 && $2)' {input} | awk -F $'\t' '{{print $2}}' > {output}"
+
+
+## Now perform starcode, with clustering distance 0 (for now)
+# by using distance 0, I essentially just use starcode to count the unique sequences
+rule starcode_barcodes:
+    input:
+        '{outdir}/parsed/{name}.sequences.txt'
+    params:
+        threads = 12
+    output:
+        '{outdir}/starcode/{name}.starcode0_sequences.txt'
+    log:
+        '{outdir}/logs/{name}_starcode_barcodes.log'
+    shell:
+        "starcode --threads {params.threads} --print-clusters -i {input} --dist 0 > {output}"        

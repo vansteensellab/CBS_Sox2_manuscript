@@ -1,0 +1,60 @@
+---
+title: "CM20230406_E2227_making_metadatafile"
+author: "Christine Moene"
+date: "2023-04-06"
+output: html_document
+---
+
+
+# Goal
+Making the metadata file so I can run my little snakemake pipeline to get the amplicon sequences
+
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(stringr)
+library(dplyr)
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+
+quick piece of code to select only my sequencing files
+```{r getting_filenames}
+allfiles = dir("/shared/gcf/c.moene/7239/M909_fastq_files")
+fileN = sapply(allfiles, function(X){
+  as.numeric(str_split(X,"_")[[1]][2])
+})
+
+ordered_files = allfiles[order(fileN)]
+DelD_files = ordered_files[grepl("DelD", ordered_files)]
+
+metatable = tibble(
+  sample_name = split_string(ordered_files, "_", 3,5),
+  primers = split_string(ordered_files, "_", 3))
+
+
+# write.table(metatable, "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/E2227_genotyping_CTCF_deletion_clones/CM20230406_E2227_metadata.tsv",quote=F,row.names=F,col.names=T,sep='\t')
+
+
+```
+
+conda activate BChop
+snakemake -c 10 -s CM20230406_E2227_pipeline.snake
+
+
+```{r}
+
+library(ShortRead)
+test = ShortRead::readFastq(paste0("/shared/gcf/c.moene/7239/M909_fastq_files/", ordered_files[1]))
+test2 = ShortRead::readFastq(paste0("/shared/gcf/c.moene/7239/M909_fastq_files/", ordered_files[64]))
+test3 = ShortRead::readFastq(paste0("/shared/gcf/c.moene/7239/M909_fastq_files/", ordered_files[48]))
+
+sread(test)
+sread(test3)
+
+```

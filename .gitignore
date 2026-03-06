@@ -1,0 +1,6 @@
+.Rhistory
+.Rproj.user
+*.fastq
+*.fastq.gz
+*.bam
+*.bw

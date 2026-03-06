@@ -1,0 +1,378 @@
+---
+title: "me20260303_figure_3D"
+author: "Mathias"
+date: "2026-03-03"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+#Aim
+When we conducted the hopping experiment of the 1xCBS_Fw_Sox2P insert from LP-116kb, we sorted some cells as clones and grew them out. We then mapped the integrations of those clones via Tagmentation and re-measured their fluorescence (Sox2::GFP, Sox2::mCherry and Sox2P::mTurq) by FACS. 
+Here we want to match the mapped locations of clones with the corresponding fluorescence intensity to see location specific expression changes. 
+
+# Set-up
+Load the libraries and set the parameters.
+```{r load_libraries}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+library(readxl)
+library(plotly)
+# library(flowCore)
+import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+library(cowplot)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+
+# Paths & parameters
+```{r paths_parameters}
+setwd("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_3/")
+
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_3/analysis_Figure_3D_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+library(knitr)
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+
+```{r element_coordinates}
+
+# Location of enhancer / gene
+enhancer <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34753415,
+                                     end = 34766401),
+                    strand = "*")
+
+#gene based on mm10, ucsc browser, RefSeq annotation
+gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34650405,
+                                     end = 34652461),
+                    strand = "+")
+
+landingPad_23 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34643960,
+                                     end = 34643962),
+                    strand = "+")
+
+landingPad_8 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34721183,
+                                     end = 34721184),
+                    strand = "+")
+
+
+#CTCF sites based on our own mapping
+# new analysis (based on mapping to mm10 only)
+CTCF_mm10_new <- import.bed('/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed')
+
+#filtering:
+CTCF_mm10.chr3 <- CTCF_mm10_new[seqnames(CTCF_mm10_new)== 'chr3']
+# add the missing site after the SCR
+CTCF_mm10.chr3_extra = sort(c(CTCF_mm10.chr3,
+                         GRanges(seqnames = "chr3",
+                                 IRanges(start = 34772210, end = 34772210),
+                                 strand = "+")),
+                         ignore.strand = T)
+
+prange_zoom = c(34500000 , 35000000)
+prange_narrow = c(34600000, 34800000)
+```
+
+# Load curated 1xCBS Fw Sox2P (MK03) clones
+```{r load 1xCBS Fw Sox2P clones}
+# Curated MK03 clones
+path_tib_MK03_clones = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_MK03_clones.tsv"
+
+tib_MK03_clones = read_tsv(path_tib_MK03_clones) %>%
+  filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
+  mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X"))),
+         hopped = start != 34643961)
+```
+
+## Plot position of integrations
+```{r plot_confident_clones}
+
+tib_MK03_clones %>% 
+  filter(start >= prange_zoom[1] & start <= prange_zoom[2]) %>%
+  ggplot(aes(x = start, y = read_count, col = cell_line)) +
+  facet_grid(expected_clonetype ~.) +
+  # annotate enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'purple') +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = 'purple') +
+  # annotate gene
+  annotate("rect", xmin = start(gene), xmax = end(gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red') +
+  geom_vline(xintercept = c(start(gene), end(gene)), col = 'red') +
+  #annotate landing pad
+  geom_vline(xintercept = start(landingPad_23), col = 'darkgrey') +
+      #annotate CTCF sites
+  geom_vline(xintercept = start(CTCF_mm10.chr3), col = 'darkgrey', linetype = 'dotted') + 
+  #extra CTCF site that is not in the annotation
+  geom_vline(xintercept = 34772210, col = 'darkgrey', linetype = "dotted") +
+
+  geom_point() +
+    
+  labs(x='Genomic coordinate (Mb)',y='number of reads') + 
+    #layout:
+  theme_classic(base_size = 16) +
+  theme(legend.position = "none") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6), labels = scales::unit_format(scale = 1E-6, accuracy = 0.1, unit=NULL),
+                     limits=prange_zoom) +
+  ggtitle("all  clones") 
+```
+
+
+# Import corresponding FACS Data
+Load matching FACS files
+```{r load_set_of_fcs_files}
+
+##load the file names
+fcs_files_E2259 = dir('/DATA/projects/CTCF_Sox2/Zenodo/FACS_files/export_fcs_R_E2259_MK03_clones/', full.names = T)
+
+#wrangle sample names E2259
+names(fcs_files_E2259) = split_string(str_remove(fcs_files_E2259, '.*/'), "_", 2, 9)
+flowset_E2259 = flowCore::read.flowSet(files = fcs_files_E2259, alter.names = T, truncate_max_range = F)
+flowCore::sampleNames(flowset_E2259) = names(fcs_files_E2259)
+pData(flowset_E2259)$name = names(fcs_files_E2259)
+
+pdata_tib_E2259 = pData(flowset_E2259) %>%
+  mutate(cell_line = case_when(grepl("23_34A", name) ~ "23_34A",
+                               grepl("23_MK3_C1", name) ~ "23_MK03",
+                               .default = "unclear"),
+         clone_well = case_when(cell_line == "23_34A" ~ str_remove(name, ".*_"),
+                                cell_line == "23_MK03" ~ split_string(name, "_", 7)),
+         sample = paste0("clone_E2259_", cell_line, "_", clone_well)) %>%
+  left_join(tib_MK03_clones) %>%
+  data.frame()
+rownames(pdata_tib_E2259) = pdata_tib_E2259$name
+pData(flowset_E2259) = pdata_tib_E2259
+
+#combine all flowsets together
+flowset_fluo =  flowset_E2259 [,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A')] 
+colnames(flowset_fluo) = c("GFP", "mCherry", "mTurq")
+
+#select only the mapped clones (+ctrl sample)
+samples_oi = !is.na(pData(flowset_fluo)$chr)
+
+flowset_fluo_selected = flowset_fluo[samples_oi,]
+flowCore::sampleNames(flowset_fluo_selected) = pData(flowset_fluo_selected)$sample
+```
+
+# Normalizing to MK03 in LP-116kb
+## preprocessing
+**subtract autofluoresence**
+When we measured those clones, we didnt measure a non-fluorescent WT mESC control. To adjust for autofluorescence, we used the mean of two WT measurements from another experiment (E2295). The cells were cultured in the same S+L+2i medium and analyzed on the same FACS Fortessa1 machine with the same setup (BL[B] = 470V; YG[D] = 700V; V[F] = 400V; used a 470nm filter instead of 450 for mTurq detection)
+
+mTurq: the mean of two WT measurments
+mCherry / GFP: the mean of two WT measurments
+```{r preprocess_FACS}
+#manually set autofluorescence values
+auto_mTurq = 344
+auto_GFP = 479
+auto_mCh = 494
+
+#for each fluorophore, subtract the autofluorescence (this data now includes negative fluorescence values, does that matter?)
+flowset_fluo_cor = flowCore::transform(flowset_fluo_selected,
+                                `GFP_cor` = `GFP` - auto_GFP, 
+                               `mCherry_cor` = `mCherry` - auto_mCh,
+                               `mTurq_cor` = `mTurq` - auto_mTurq)
+
+#get cell count
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_cor, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+#get median expressions
+median_mTurq = sapply(1:length(flowset_fluo_cor), function(i){
+  median(exprs(flowset_fluo_cor[[i]])[,'mTurq_cor'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_cor)
+
+median_mCherry = sapply(1:length(flowset_fluo_cor), function(i){
+  median(exprs(flowset_fluo_cor[[i]])[,'mCherry_cor'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_cor)
+
+median_GFP = sapply(1:length(flowset_fluo_cor), function(i){
+  median(exprs(flowset_fluo_cor[[i]])[,'GFP_cor'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_cor)
+
+pData(flowset_fluo_cor)$median_mTurq = median_mTurq
+pData(flowset_fluo_cor)$median_mCherry = median_mCherry
+pData(flowset_fluo_cor)$median_GFP = median_GFP
+pData(flowset_fluo_cor)$total_cell_count = total_cell_count
+
+```
+
+Get summary data
+```{r}
+expression_tib_cor = pData(flowset_fluo_cor) %>%
+  mutate(mTurq_norm = median_mTurq / median_GFP,
+         mCherry_norm = median_mCherry / median_GFP)
+
+clones_by_pos = expression_tib_cor %>%
+  group_by(experiment, chr, start, strand, cell_line, expected_clonetype) %>%
+  summarize(
+    mTurq_mean = mean(median_mTurq),
+    mCherry_mean = mean(median_mCherry),
+    GFP_mean = mean(median_GFP),
+    mTurq_norm_mean = mean(mTurq_norm),
+    mCherry_norm_mean = mean(mCherry_norm))
+
+```
+
+## Relative to unhopped 23_MK03 clone
+```{r relative expression}
+baseline_sample = expression_tib_cor %>%
+  dplyr::filter(start == 34643961 & cell_line == "23_MK03") %>%
+  group_by(experiment) %>%
+  summarize(mTurq_norm_23_MK03 = mean(mTurq_norm),
+            mCherry_norm_23_MK03 = mean(mCherry_norm)
+            )
+
+expression_tib_cor_rel = left_join(expression_tib_cor, baseline_sample) %>%
+    mutate(mTurq_scaled = mTurq_norm / mTurq_norm_23_MK03,
+         mCherry_scaled = mCherry_norm / mCherry_norm_23_MK03)
+
+clones_by_pos_rel = expression_tib_cor_rel %>%
+  group_by(experiment, chr, start, strand, cell_line, expected_clonetype) %>%
+  summarize(
+   mTurq_mean = mean(median_mTurq),
+    mCherry_mean = mean(median_mCherry),
+    GFP_mean = mean(median_GFP),
+    mTurq_norm_mean = mean(mTurq_norm),
+    mCherry_norm_mean = mean(mCherry_norm),
+    mTurq_mean_scaled = mean(mTurq_scaled),
+    mCherry_mean_scaled = mean(mCherry_scaled))
+```
+
+# Plot mTurq and mCh of sorted MK03 clones
+```{r}
+#Plot mCherry insulation
+pClones_mapped_norm_MK03_LP116kb_mCherry =
+ggplot(dplyr::filter(clones_by_pos_rel, cell_line == "23_MK03"), aes(x = start, y = mCherry_mean_scaled, col = expected_clonetype)) +
+  # facet_grid(. ~  experiment, drop=T)+
+  # annotate enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'orange') +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = 'orange') +
+  # annotate gene
+  annotate("rect", xmin = start(gene), xmax = end(gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red') +
+  geom_vline(xintercept = c(start(gene), end(gene)), col = 'red') +
+  #annotate landing pad
+  geom_vline(xintercept = start(landingPad_23), col = 'darkgrey') +
+  geom_vline(xintercept = start(landingPad_8), col = 'darkgrey') +
+  #annotate CTCF sites
+  geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey', lty = '11') +
+  
+  #indicate scaled expression of 1 (23_34A)
+  geom_hline(yintercept = 1, linetype = 'dashed')+ 
+  
+  #layout
+  labs(x='Genomic coordinate (Mb)') +
+  theme_classic(base_size = 16) +
+  theme(legend.position = "bottom") +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6),
+                     labels = scales::unit_format(scale = 1E-6, accuracy = 0.05, unit=NULL),
+                     limits=prange_narrow,
+                     expand = c(0,0)
+                     ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 6),
+                     limits=c(0,NA),
+                     expand = expansion(mult = c(0,0.05))) +
+  
+  #points
+  geom_point()+
+  scale_color_manual(values  = c(insertion = "#7D6FB1")) +
+  theme(legend.position = "none")
+
+pClones_mapped_norm_MK03_LP116kb_mCherry
+
+
+#Plot mTurq
+pClones_mapped_norm_MK03_LP116kb_mTurq =
+ggplot(dplyr::filter(clones_by_pos_rel, cell_line == "23_MK03"), aes(x = start, y = mTurq_mean_scaled,  col = expected_clonetype)) +
+  # facet_grid(. ~  experiment, drop=T)+
+  # annotate enhancer
+  annotate("rect", xmin = start(enhancer), xmax = end(enhancer), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'orange') +
+  geom_vline(xintercept = c(start(enhancer), end(enhancer)), col = 'orange') +
+  # annotate gene
+  annotate("rect", xmin = start(gene), xmax = end(gene), ymin = -Inf, ymax = Inf, alpha = .2, fill = 'red') +
+  geom_vline(xintercept = c(start(gene), end(gene)), col = 'red') +
+  #annotate landing pad
+  geom_vline(xintercept = start(landingPad_23), col = 'darkgrey') +
+  geom_vline(xintercept = start(landingPad_8), col = 'darkgrey') +
+  #annotate CTCF sites
+  geom_vline(xintercept = start(CTCF_mm10.chr3_extra), col = 'darkgrey', lty = '11') +
+  
+  #indicate scaled expression of 1 (23_34A)
+  geom_hline(yintercept = 1, linetype = 'dashed')+ 
+  
+  #layout
+  #labs(x='Genomic coordinate (Mb)') +
+  theme_classic(base_size = 16) +
+  scale_x_continuous(breaks = scales::pretty_breaks(n = 6),
+                     labels = scales::unit_format(scale = 1E-6, accuracy = 0.05, unit=NULL),
+                     limits=prange_narrow,
+                     expand = c(0,0)
+                     ) +
+  scale_y_continuous(breaks = scales::pretty_breaks(n = 6),
+                     limits=c(0,NA),
+                     expand = expansion(mult = c(0,0.05))) +
+  
+  #points
+  geom_point()+
+  scale_color_manual(values  = c(insertion = "#7D6FB1")) +
+  theme(legend.position = "none") +
+  theme(axis.title.x=element_blank(),
+        axis.text.x=element_blank(),
+        axis.ticks.x=element_blank())
+
+pClones_mapped_norm_MK03_LP116kb_mTurq
+
+plot_grid(pClones_mapped_norm_MK03_LP116kb_mTurq, pClones_mapped_norm_MK03_LP116kb_mCherry, ncol = 1, align = "v", rel_heights = c(0.75,1))
+
+kable(clones_by_pos_rel %>% 
+        dplyr::filter(cell_line == "23_MK03") %>% 
+        select(cell_line, strand, expected_clonetype, mTurq_mean_scaled, mCherry_mean_scaled))
+```

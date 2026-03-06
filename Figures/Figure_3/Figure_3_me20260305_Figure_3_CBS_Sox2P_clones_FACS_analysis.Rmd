@@ -1,0 +1,401 @@
+---
+title: "me20250708_FACS_analysis_MK_competition"
+author: "Mathias"
+date: "2025-07-08"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+
+# Aim 
+In E2252 we flipped MK01, MK02, MK03 into LP-39kb (between Sox2 and SCR) and LP-116kb (5kb upstream of Sox2::mCherry) to see the effect on reporter and mCherry expression.
+We transfected, selected, picked colonies, genotyped them by PCR and measured them by FACS. 
+
+Here i want to display the Fluo values of the samples.
+
+# Method
+- gated fcs files in flowjo for single cells
+- import data
+- correct for autofluorescnece 
+- normalize to 23_34A
+- plot reporter and Sox2::mCherry
+
+
+#Compatibility problems
+The newer ggplot version is not compatible with the plotting in the ggcyto package, therefore i loaded an older version of ggplot in order to be compatible with the functions of ggcyto.
+```{r}
+# Load older ggplot version that is compatible with the ggcyto package
+.libPaths(c("/DATA/usr/m.eder/R/ggplot2_3x", .libPaths()))
+
+library(ggplot2)
+packageVersion("ggplot2")  # should now show 3.5.1
+```
+
+# Set-up
+##Libraries
+Load the libraries and set the parameters.
+```{r}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+# library(dtplyr)
+library(dplyr)
+# library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+# library(plotly)
+library(readxl)
+library(ggpubr)
+library(ggpmisc)
+library(ggridges)
+library(import)
+library(ggh4x)
+library(rstatix)
+# library(flowCore)
+import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+library(cowplot)
+library(Signac)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+
+```{r paths_parameters}
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_3/analysis_FACS_CBS_Sox2P_", datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+library(knitr)
+opts_chunk$set(
+               cache = T,
+               message = F, 
+               warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 600,
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+## Color scheme
+```{r color_settings}
+
+myCols_insert_cell_lines <- c(
+  `MK01` = '#1b9e77',   # Teal green
+  `MK02` = '#d95f02',   # Strong orange
+  `MK03` = '#7570b3',   # Purple
+  `23_34A` = 'black', # 
+  `8_34_8` = 'black', # 
+  `WT` = 'black'        # Black for wild type
+)
+
+col_scale_MK_cl <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_cell_lines,
+  aesthetics = c("colour", "fill")
+)
+
+
+## SCR
+brown = "#ffb000"
+```
+
+## Load fcs files
+```{r}
+path_fcs_files_E2252 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2252"
+
+fcs_files_E2252 = dir(path_fcs_files_E2252, full.names = T)
+fcs_files_E2252_nms = str_remove(fcs_files_E2252, "^.*/")
+
+fcs_files_E2252_nms2 = split_string(fcs_files_E2252_nms, "_", 6, 8)
+names(fcs_files_E2252) = fcs_files_E2252_nms2
+
+flowset_E2252 = read.flowSet(files = fcs_files_E2252, alter.names = T, truncate_max_range = F)
+sampleNames(flowset_E2252) = names(fcs_files_E2252)
+pData(flowset_E2252)$name = names(fcs_files_E2252)
+
+autoplot(flowset_E2252[1:10], 'FSC.A', 'SSC.A')
+autoplot(flowset_E2252[1:10], 'BL.B..530_30.A', 'YG.D..610_20.A')
+autoplot(flowset_E2252[1:10], 'BL.B..530_30.A', 'V.F..450_50.A')
+# 
+flowset_fluo_E2252 = flowset_E2252[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A', 'FSC.A', 'SSC.A')]
+colnames(flowset_fluo_E2252) = c("GFP", "mCherry", "mTurq", 'FSC', 'SSC')
+```
+
+## Annotation
+```{r}
+
+tib_annot_E2252 = tibble(sample_name = names(fcs_files_E2252)) %>%
+  mutate(cell_line = case_when(grepl("_MK1", sample_name) ~ "MK01",
+                               grepl("_MK2", sample_name) ~ "MK02",
+                               grepl("_MK3", sample_name) ~ "MK03",
+                               grepl("23_34A", sample_name) ~ "23_34A",
+                               grepl("8_34_8", sample_name) ~ "8_34_8",
+                               grepl("F121_9_002", sample_name) ~ "F121",
+                               grepl("WT", sample_name) ~ "WT"),
+         landing_pad_location = case_when(grepl("23_", sample_name) ~ "LP -116 kb",
+                                          grepl("8_", sample_name) ~ "LP -39 kb",
+                                          .default = "none"),
+         LP_CL = paste0(cell_line, "_", landing_pad_location),
+         clone_tmp = split_string(sample_name, "_", 3),
+         clone = case_when(clone_tmp == "003" ~ "34A",
+                           clone_tmp == "002" ~ "ctrl",
+                           clone_tmp == "Single Cells.fcs" ~ "ctrl",
+                           .default = clone_tmp),
+         insert_name = case_when(cell_line == "MK01" ~ "CBS3x_Fw_Sox2P",
+                                 cell_line == "MK02" ~ "CBS3x_Rv_Sox2P",
+                                 cell_line == "MK03" ~ "CBS1x_Fw_Sox2P",
+                                 cell_line == "23_34A" ~ "Sox2P",
+                                 cell_line == "8_34_8" ~ "Sox2P",
+                                 cell_line == "F121" ~ "none",
+                                 .default = cell_line),
+          experiment = "E2252") %>%
+  select(-clone_tmp)
+
+
+pheno_data_tib_E2252 = left_join(pData(flowset_fluo_E2252), tib_annot_E2252, join_by(name == sample_name) ) 
+rownames(pheno_data_tib_E2252) = pheno_data_tib_E2252$name
+
+pData(flowset_fluo_E2252) = pheno_data_tib_E2252
+```
+
+## calculate expression
+For now I calculate the median expression without subtracting any autofluorescence
+```{r median_E2252}
+
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2252, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+median_mTurq = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2252)
+
+median_mCherry = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2252)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2252)
+
+flowCore::pData(flowset_fluo_E2252)$median_mTurq = median_mTurq
+flowCore::pData(flowset_fluo_E2252)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2252)$median_GFP = median_GFP
+
+flowCore::pData(flowset_fluo_E2252)$total_cell_count = total_cell_count
+
+fcs_tib = tibble(flowCore::pData(flowset_fluo_E2252))
+```
+
+# Normalize expression
+```{r normalize_expression_values}
+#subtract autofluorescence, normalize to GFP
+autofluo_tib_comb = fcs_tib  %>%
+  filter(cell_line == "WT") %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+           mCherry_WT = mean(median_mCherry),
+            GFP_WT = mean(median_GFP) )
+
+expression_tib_comb = fcs_tib %>%
+  bind_cols(autofluo_tib_comb) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 23_34A (to compare between measurement days)
+standard_tib = expression_tib_comb %>%
+  filter(cell_line == "23_34A") %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+           mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor) )
+
+expression_tib_comb = expression_tib_comb %>%
+  bind_cols(standard_tib) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+
+stat_table = 
+expression_tib_comb %>% 
+  group_by(cell_line, landing_pad_location) %>% 
+  summarise(mean_mCh = mean(rel_mCherry),
+            mean_mTurq = mean(rel_mTurq))
+``` 
+**Conclusion:**
+maximum insulation in LP-39kb with MK01, rel_mean_mCherry (normalized to GFP and 23_34A) is 0.65, that means ~ 34% reduction in Sox2::mCherry expression. Sox2P only does not lead to such a reduction, actually has a bit more than 23_34A (1.05).
+
+
+## Plot clones
+```{r}
+filter(expression_tib_comb, total_cell_count >= 500) %>%
+  #plotting
+  ggplot(aes(x = LP_CL, y = rel_mTurq, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+  
+
+# Relative mCherry
+filter(expression_tib_comb, total_cell_count >= 500) %>%
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E2252") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+  
+```
+
+## Exclude WT and F1212 ctrls from plot
+```{r}
+## Reorder samples
+order <- c("WT","F121","23_34A","8_34_8","MK03","MK01","MK02")
+
+pClones_mT_LP = 
+filter(expression_tib_comb, total_cell_count >= 500, landing_pad_location != "none") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+
+pClones_mCh_LP = 
+filter(expression_tib_comb, total_cell_count >= 500 & landing_pad_location != "none") %>%
+   mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line 
+  stat_summary(fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black",  
+               aes(y = rel_mCherry), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E2252") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+
+
+plot_grid(pClones_mT_LP, pClones_mCh_LP, ncol = 1, align = "hv", axis = "lr")
+```
+
+## Plot FACS density
+```{r}
+# Filter for landing_pad_location LP-116kb
+LP116kb = expression_tib_comb %>% 
+  filter(landing_pad_location == "LP -116 kb") %>% 
+  pull(name)
+
+ggplot(flowset_fluo_E2252[LP116kb,], aes(x = mTurq, col = insert_name, linetype = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw()
+  
+ggplot(flowset_fluo_E2252[LP116kb,], aes(x = mTurq, col = insert_name, linetype = clone)) + #, col = as_factor(sort2))) + 
+  #facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw()
+
+
+# Filter for landing_pad_location LP-39 kb
+LP39kb = expression_tib_comb %>% 
+  filter(landing_pad_location == "LP -39 kb") %>% 
+  pull(name)
+
+ggplot(flowset_fluo_E2252[LP39kb,], aes(x = mTurq, col = insert_name, linetype = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw()
+
+
+# Plot both LPs & ctrl (F121)
+LP_both_ctrl = expression_tib_comb %>% 
+  filter(landing_pad_location %in% c("LP -39 kb", "LP -116 kb")) %>% 
+  pull(name)
+
+
+ggplot(flowset_fluo_E2252, aes(x = mTurq, col = cell_line, linetype = clone)) + #, col = as_factor(sort2))) + 
+  facet_grid(landing_pad_location ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  col_scale_MK_cl
+```
+
+

@@ -1,0 +1,7 @@
+chr	sample	start	strand	read_count	n_reads_fw	n_reads_rv	sorted_plate	cell_line	experiment	expected_clonetype
+chr3	clone_E2259_23_MK03_E2	34726026	+	256	47	209	E2259_23_MK03	23_MK03	E2259	insertion
+chr3	clone_E2259_23_MK03_E7	34737651	+	259	60	199	E2259_23_MK03	23_MK03	E2259	insertion
+chr3	clone_E2259_23_MK03_E8	34741880	+	164	27	137	E2259_23_MK03	23_MK03	E2259	insertion
+chr3	clone_E2259_23_MK03_F4	34741864	+	193	24	169	E2259_23_MK03	23_MK03	E2259	insertion
+chr3	clone_E2259_23_MK03_F6	34643961	+	184	47	137	E2259_23_MK03	23_MK03	E2259	insertion
+chr3	clone_E2259_23_MK03_G6	34754834	+	140	91	49	E2259_23_MK03	23_MK03	E2259	insertion

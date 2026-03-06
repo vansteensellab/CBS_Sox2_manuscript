@@ -1,0 +1,233 @@
+---
+title: "me20260129_RCMC_Sox2_Figure_1"
+author: "Mathias"
+date: "2026-01-29"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+# Aim
+I want to plot the 3D configuration of the mouse Sox2 locus from the region capture microC data (GSM6281849) form Goel et al. (Hansen lab). 
+The data was in mm39, therefore we had to liftover the coordinates to mm10. 
+
+# Set-up
+The newer ggplot version is not compatible with the plotting in the genova package, therefore i loaded an older version of ggplot in order to be compatible with the pyramid function of the GENOVA package. 
+```{r}
+# install.packages("remotes")  # if needed
+
+# dir.create("/DATA/usr/m.eder/R/ggplot2_3x", showWarnings = FALSE, recursive = TRUE)
+# 
+# remotes::install_version(
+#   "ggplot2",
+#   version = "3.5.2",
+#   lib = "/DATA/usr/m.eder/R/ggplot2_3x",
+#   repos = "https://cloud.r-project.org"
+# )
+```
+
+Load the libraries and set the parameters.
+```{r load_libraries}
+# Load older ggplot version that is compatible with the GENOVA package
+.libPaths(c("/DATA/usr/m.eder/R/ggplot2_3x", .libPaths()))
+
+library(ggplot2)
+packageVersion("ggplot2")  # should now show 3.5.2
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(purrr)
+library(RcppRoll)
+library(viridis)
+library(ggh4x)
+library(GENOVA)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+# Paths & parameters
+```{r paths_parameters}
+setwd("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_1")
+
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_1/figure1_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, 
+               warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 600,
+               fig.path = file.path(output_dir, "/figure_1/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+
+
+# File paths
+```{r}
+path_CTCF_sites = "/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed"
+```
+
+# Relevant annotations
+```{r element_coordinates}
+
+# Location of enhancer / gene
+enhancer <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34753415,
+                                     end = 34766401),
+                    strand = "*")
+
+#gene based on mm10, ucsc browser, RefSeq annotation
+# Sox2
+# chr3:34649995-34652461 (+)
+# id = NM_011443.4
+Sox2_gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34649995,
+                                     end = 34652461),
+                    strand = "+")
+
+
+landingPad_23 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34643960,
+                                     end = 34643962),
+                    strand = "+")
+
+landingPad_8 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34721183,
+                                     end = 34721184),
+                    strand = "+")
+
+
+LP_tib = tibble(launch_pad_location = c("-116 kb", "-39 kb"), 
+                start = c( start(landingPad_23),start(landingPad_8)))
+
+#CTCF sites based on our own mapping
+# new analysis (based on mapping to mm10 only)
+CTCF_mm10_new <- import.bed('/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed')
+
+#filtering:
+CTCF_mm10.chr3 <- CTCF_mm10_new[seqnames(CTCF_mm10_new)== 'chr3']
+# add the missing site after the SCR
+CTCF_mm10.chr3_extra = sort(c(CTCF_mm10.chr3,
+                         GRanges(seqnames = "chr3",
+                                 IRanges(start = 34772210, end = 34772210),
+                                 strand = "+")),
+                         ignore.strand = T)
+
+
+prange_zoom = c(34500000 , 35000000)
+prange2 = c(34000000, 35500000)
+prange_far = c(32000000, 37000000)
+#zoom in on only the SCR +- 50kb
+prange_LP = c(start(landingPad_23)-5E4, end(landingPad_23)+5E4)
+prange_SCR = c(start(enhancer)-5E4, end(enhancer)+5E4)
+prange_plot = c(32643960, 36643960) #+/- 2MB from landing pad
+prange_loop = c(34631804, 34778268)
+prange_zoom = c(34.5E6, 35E6)
+prange_zoom_paper = c(34.59E6, 34.83E6)
+prange_SCR = c(34.725E6, 34.785E6)
+```
+
+# 3D genome annotation
+## LiftOver chains
+```{r}
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm9/liftOver/mm9ToMm10.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm9ToMm10.over.chain.gz")
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm10/liftOver/mm10ToMm9.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm9.over.chain.gz")
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm39/liftOver/mm39ToMm10.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm39ToMm10.over.chain.gz")
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm10/liftOver/mm10ToMm39.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm39.over.chain.gz")
+
+# library(R.utils)
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm9ToMm10.over.chain.gz")
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm9.over.chain.gz")
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm39ToMm10.over.chain.gz")
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm39.over.chain.gz")
+
+chain_mm9_to_mm10 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm9ToMm10.over.chain")
+chain_mm10_to_mm9 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm9.over.chain")
+chain_mm10_to_mm39 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm39.over.chain")
+chaim_mm39_to_mm10 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm39ToMm10.over.chain")
+#landingPad_23_mm39= liftOver()
+
+```
+
+## Load RCMC data
+```{r}
+WT_file = "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/CM20230718_GSM6281849_RCMC_BR1_merged_allCap_WT_mm39.merged.50.mcool"
+
+RCMC_1kb = load_contacts(signal_path = WT_file,
+                      sample_name = 'WT',
+                      resolution = 1000)
+
+RCMC_5kb = load_contacts(signal_path = WT_file,
+                      sample_name = 'WT',
+                      resolution = 5000)
+```
+
+```{r A_RCMC_pyramid_annotated, fig.width = 7.2, fig.height = 3}
+#plotting range on mm39
+plot_range_hiC = c(34.65E6,
+                   34.9E6)
+
+#annotations
+annotation_gr_mm10 = c(Sox2_gene, enhancer)
+names(annotation_gr_mm10) = c("Sox2", "SCR")
+
+annotation_gr_mm39 = unlist(liftOver(annotation_gr_mm10, chain_mm10_to_mm39))
+bed_tib_mm39 = as_tibble(annotation_gr_mm39)
+
+# CTCF annotation
+CTCF_ROI_mm10 = subsetByOverlaps(CTCF_mm10.chr3_extra, GRanges(seqnames = "chr3", IRanges(start = 30E6, end = 40E6)))
+CTCF_ROI_mm39 = unlist(liftOver(CTCF_ROI_mm10, chain_mm10_to_mm39))
+CTCF_ROI_mm39_tib = as_tibble(CTCF_ROI_mm39)
+  
+p <- GENOVA::pyramid(
+  exp = RCMC_1kb,
+  chrom = "chr3",
+  colour = c(0, 1500),
+  start = plot_range_hiC[1],
+  end = plot_range_hiC[2]
+)
+
+p + 
+  geom_rect(data = bed_tib_mm39, aes(xmin = start, xmax = end), ymin = -30E3, ymax = -10E3) +
+  geom_segment(data = CTCF_ROI_mm39_tib, aes(x = start, xend = start, col = strand), y = -30E3, yend = -10E3) +
+  geom_vline(xintercept = start(CTCF_ROI_mm39), col = 'darkgrey',linetype = 'dotted')
+
+```
+

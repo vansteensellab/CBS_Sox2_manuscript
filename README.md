@@ -8,6 +8,7 @@ In this study we investigated the location dependent effect of ectopic CTCF bind
 This repository contains information about
 - Tagmentation: Tn5_tagmentation mapping (pipeline)
   - including all config files used for the data in the paper
+  - including txt files with all mapped integrations from this study
     
 - Info_files
   - file containing FACS sorting statistics for each experiment (needed for expression score calculation)

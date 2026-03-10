@@ -67,7 +67,7 @@ split_string <- function(vect,sep,N1,N2=N1){
 
 # Paths & parameters
 ```{r paths_parameters}
-setwd("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_7")
+setwd("/DATA/usr/m.eder/GitHub/CBS_Sox2_manuscript/Figures/Figure_7/")
 
 #datatag
 datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
@@ -96,7 +96,7 @@ pdf.options(useDingbats = FALSE)
 path_tib_23_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_-116kb_Sox2P_pools.txt"
 
 #delta CBS integrations
-path_tib_DelDE_ints = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_Sox2P_DelDE.tsv"
+path_tib_DelDE_ints = "/DATA/projects/CTCF_Sox2/Integrations_files/mapped_integrations_-116kb_Sox2P_delCBS_pools.txt"
 
 
 #Sorting stats

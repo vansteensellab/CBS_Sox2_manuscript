@@ -108,7 +108,7 @@ pdf.options(useDingbats = FALSE)
 path_CTCF_sites = "/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed"
 
 path_tib_23_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_-116kb_Sox2P_pools.txt"
-path_tib_CTCF_Sox2P = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_CBS_Sox2P.tsv"
+path_tib_CTCF_Sox2P = "/DATA/usr/m.eder/GitHub/CBS_Sox2_manuscript/Tagmentation/Integration_tables/mapped_integrations_-116kb_CBS_Sox2P_pools.txt"
 
 
 path_median_mTurq_relevant_cell_lines = "/DATA/projects/CTCF_Sox2/Info_files/me20250707_median_mTurq_mCherry_GFP_sorting_all.tsv"
@@ -242,7 +242,7 @@ tib_23 = tib_23_all_data %>%
 
 
 # Load CTCF_Sox2P data
-tib_CTCF_Sox2P = read_tsv("/DATA/projects/CTCF_Sox2/Integrations_files/pools_ints_CTCF_Sox2P.tsv") %>%
+tib_CTCF_Sox2P = read_tsv(path_tib_CTCF_Sox2P) %>%
   filter(chr %in% paste0("chr", c(1:19, "X"))) %>%
   mutate(chr = factor(chr, levels = paste0("chr", c(1:19, "X")))) %>% 
   mutate(LP = case_when(experiment == "E2292" ~ "LP8",

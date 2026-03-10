@@ -78,13 +78,13 @@ split_string <- function(vect,sep,N1,N2=N1){
 
 # Paths & parameters
 ```{r paths_parameters}
-setwd("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_5")
+setwd("/DATA/usr/m.eder/GitHub/CBS_Sox2_manuscript/Figures/Figure_5/")
 
 #datatag
 datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
 
 # Prepare output 
-output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/for_figures/Figure_5/",datetag)
+output_dir <- paste0("/DATA/usr/m.eder/GitHub/CBS_Sox2_manuscript/Figures/Figure_5/",datetag)
 dir.create(output_dir, showWarnings = FALSE)
 ```
 
@@ -106,7 +106,7 @@ pdf.options(useDingbats = FALSE)
 path_CTCF_sites = "/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed"
 
 # New path
-path_CTCF_ints = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_CBS.tsv"
+path_CTCF_ints = "/DATA/usr/m.eder/GitHub/CBS_Sox2_manuscript/Tagmentation/Integration_tables/mapped_integrations_-116kb_CBS_pools.txt"
 
 # Sorting stats
 path_sorting_stats = "/DATA/projects/CTCF_Sox2/Info_files/me20250530_stats_for_expression_score_mCherry.xlsx"

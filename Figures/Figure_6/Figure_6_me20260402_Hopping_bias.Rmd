@@ -101,9 +101,9 @@ pdf.options(useDingbats = FALSE)
 path_CTCF_sites = "/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed"
 
 # Path for integrations
-path_CTCF_ints = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_CBS.tsv"
+path_CTCF_ints = "/DATA/projects/CTCF_Sox2/Integrations_files/mapped_integrations_-116kb_CBS_pools.txt"
 path_tib_23_ints = "/DATA/projects/Sox2/GEO_collection/Tagmentation/still_to_upload/mapped_integrations_-116kb_Sox2P_pools.txt"
-path_tib_CTCF_Sox2P = "/DATA/projects/CTCF_Sox2/GEO_collection/filename_ints_116kb_CBS_Sox2P.tsv"
+path_tib_CTCF_Sox2P = "/DATA/projects/CTCF_Sox2/Integrations_files/mapped_integrations_-116kb_CBS_Sox2P_pools.txt"
 
 # this RDS comes from the following markdown 'me20260302_figure_2_S1_S3"
 tib_filtered_curated_strict = readRDS("/DATA/projects/CTCF_Sox2/Scripts/CTCF_Sox2P/tib_filtered_curated_strict.rds")

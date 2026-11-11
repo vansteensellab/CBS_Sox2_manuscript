@@ -1,0 +1,1217 @@
+---
+title: "me20260703_me20250708_FACS_analysis_MK_competition"
+author: "Mathias"
+date: "2026-07-03"
+output: 
+  html_document:
+    theme: journal #cerulean
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+  editor_options:
+    chunk_output_type: console
+---
+
+#Overal
+During the Revision process we found out that there might be a second integration in the founder cell line of LP-39kb. We are not sure if this has an effect on the expression of the reporter but we decided to only use the data coming from the LP-116kb founder cell line in the manuscript. 
+
+
+#NEW
+In E3093, Christine flipped the constructs into LP23 and LP39 to produce more clones and see if we observe the two different phenotypes again. 
+This is for the revisions for the journal MSB. 
+
+# Aim 
+In E2252 we flipped MK01, MK02, MK03 into LP-39kb (between Sox2 and SCR) and LP-116kb (5kb upstream of Sox2::mCherry) to see the effect on reporter and mCherry expression.
+We transfected, selected, picked colonies, genotyped them by PCR and measured them by FACS. 
+
+Here i want to display the Fluo values of the samples.
+
+# Method
+- gated fcs files in flowjo for single cells
+- import data
+- correct for autofluorescnece 
+- normalize to 23_34A
+- plot reporter and Sox2::mCherry
+
+
+#Compatibility problems
+The newer ggplot version is not compatible with the plotting in the ggcyto package, therefore i loaded an older version of ggplot in order to be compatible with the functions of ggcyto.
+```{r}
+# # Load older ggplot version that is compatible with the ggcyto package
+# .libPaths(c("/DATA/usr/m.eder/R/ggplot2_3x", .libPaths()))
+# 
+# library(ggplot2)
+# packageVersion("ggplot2")  # should now show 3.5.1
+```
+
+# Set-up
+##Libraries
+Load the libraries and set the parameters.
+```{r}
+
+# Load dependencies
+library(GenomicRanges)
+library(rtracklayer)
+library(tidyverse)
+# library(dtplyr)
+library(dplyr)
+# library(tidyr)
+library(ggbeeswarm)
+library(ggplot2)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(RcppRoll)
+# library(plotly)
+library(readxl)
+library(ggpubr)
+library(ggpmisc)
+library(ggridges)
+library(import)
+library(ggh4x)
+library(rstatix)
+# library(flowCore)
+import::from(flowCore, .except=c("filter")) #I don't load the whole flowCore and ggcyto libraries, because they overwrite dplyr's filter function :0
+import::from(ggcyto, 'fortify_fs')
+library(flowDensity)
+library(cowplot)
+library(Signac)
+
+split_string <- function(vect,sep,N1,N2=N1){
+  library(stringr)
+  sapply(vect, function(X){
+    paste(str_split(X,sep)[[1]][N1:N2],collapse = sep)
+  },USE.NAMES = F)
+}
+```
+
+
+```{r paths_parameters}
+setwd("/DATA/projects/CTCF_Sox2/Scripts/Revisions/LP39_flipping_clones")
+
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/Revisions/LP39_flipping_clones/", datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+library(knitr)
+opts_chunk$set(
+               cache = T,
+               message = F, 
+               warning = F,
+               dev=c('png', 'pdf'), 
+               dpi = 600,
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+## Color scheme
+```{r color_settings V1}
+
+myCols_insert_cell_lines <- c(
+  `MK01` = '#1b9e77',   # Teal green
+  `MK02` = '#d95f02',   # Strong orange
+  `MK03` = '#7570b3',   # Purple
+  `23_34A` = 'black', # 
+  `8_34_8` = 'black', # 
+  `WT` = 'black'        # Black for wild type
+)
+
+col_scale_MK_cl <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_cell_lines,
+  aesthetics = c("colour", "fill")
+)
+
+
+## SCR
+brown = "#ffb000"
+```
+
+## Load fcs files
+```{r}
+path_fcs_files_E2252 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E2252_LP116/"
+
+fcs_files_E2252 = dir(path_fcs_files_E2252, full.names = T)
+fcs_files_E2252_nms = str_remove(fcs_files_E2252, "^.*/")
+
+fcs_files_E2252_nms2 = split_string(fcs_files_E2252_nms, "_", 6, 8)
+names(fcs_files_E2252) = fcs_files_E2252_nms2
+
+flowset_E2252 = read.flowSet(files = fcs_files_E2252, alter.names = T, truncate_max_range = F)
+sampleNames(flowset_E2252) = names(fcs_files_E2252)
+pData(flowset_E2252)$name = names(fcs_files_E2252)
+
+# autoplot(flowset_E2252[1:10], 'FSC.A', 'SSC.A')
+# autoplot(flowset_E2252[1:10], 'BL.B..530_30.A', 'YG.D..610_20.A')
+# autoplot(flowset_E2252[1:10], 'BL.B..530_30.A', 'V.F..450_50.A')
+# 
+flowset_fluo_E2252 = flowset_E2252[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A', 'FSC.A', 'SSC.A')]
+colnames(flowset_fluo_E2252) = c("GFP", "mCherry", "mTurq", 'FSC', 'SSC')
+```
+
+## Annotation
+```{r}
+
+tib_annot_E2252 = tibble(sample_name = names(fcs_files_E2252)) %>%
+  mutate(cell_line = case_when(grepl("_MK1", sample_name) ~ "MK01",
+                               grepl("_MK2", sample_name) ~ "MK02",
+                               grepl("_MK3", sample_name) ~ "MK03",
+                               grepl("23_34A", sample_name) ~ "23_34A",
+                               grepl("8_34_8", sample_name) ~ "8_34_8",
+                               grepl("F121_9_002", sample_name) ~ "F121",
+                               grepl("WT", sample_name) ~ "WT"),
+         landing_pad_location = case_when(grepl("23_", sample_name) ~ "LP -116 kb",
+                                          grepl("8_", sample_name) ~ "LP -39 kb",
+                                          .default = "none"),
+         LP_CL = paste0(cell_line, "_", landing_pad_location),
+         clone_tmp = split_string(sample_name, "_", 3),
+         clone = case_when(clone_tmp == "003" ~ "34A",
+                           clone_tmp == "002" ~ "ctrl",
+                           clone_tmp == "Single Cells.fcs" ~ "ctrl",
+                           .default = clone_tmp),
+         insert_name = case_when(cell_line == "MK01" ~ "CBS3x_Fw_Sox2P",
+                                 cell_line == "MK02" ~ "CBS3x_Rv_Sox2P",
+                                 cell_line == "MK03" ~ "CBS1x_Fw_Sox2P",
+                                 cell_line == "23_34A" ~ "Sox2P",
+                                 cell_line == "8_34_8" ~ "Sox2P",
+                                 cell_line == "F121" ~ "F121",
+                                 .default = cell_line),
+          experiment = "E2252") %>%
+  select(-clone_tmp)
+
+
+pheno_data_tib_E2252 = left_join(pData(flowset_fluo_E2252), tib_annot_E2252, join_by(name == sample_name) ) 
+rownames(pheno_data_tib_E2252) = pheno_data_tib_E2252$name
+
+pData(flowset_fluo_E2252) = pheno_data_tib_E2252
+```
+
+## calculate expression
+For now I calculate the median expression without subtracting any autofluorescence
+```{r median_E2252}
+
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E2252, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+median_mTurq = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E2252)
+
+median_mCherry = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E2252)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E2252), function(i){
+  median(flowCore::exprs(flowset_fluo_E2252[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E2252)
+
+flowCore::pData(flowset_fluo_E2252)$median_mTurq = median_mTurq
+flowCore::pData(flowset_fluo_E2252)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E2252)$median_GFP = median_GFP
+
+flowCore::pData(flowset_fluo_E2252)$total_cell_count = total_cell_count
+
+fcs_tib = tibble(flowCore::pData(flowset_fluo_E2252))
+```
+
+# Normalize expression
+```{r normalize_expression_values}
+#subtract autofluorescence, normalize to GFP
+autofluo_tib_comb = fcs_tib  %>%
+  filter(cell_line == "WT") %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+           mCherry_WT = mean(median_mCherry),
+            GFP_WT = mean(median_GFP) )
+
+expression_tib_comb = fcs_tib %>%
+  bind_cols(autofluo_tib_comb) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 23_34A (to compare between measurement days)
+standard_tib = expression_tib_comb %>%
+  filter(cell_line == "23_34A") %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+           mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor) )
+
+expression_tib_comb = expression_tib_comb %>%
+  bind_cols(standard_tib) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+
+stat_table = 
+expression_tib_comb %>% 
+  group_by(cell_line, landing_pad_location) %>% 
+  summarise(mean_mCh = mean(rel_mCherry),
+            mean_mTurq = mean(rel_mTurq))
+``` 
+**Conclusion:**
+maximum insulation in LP-39kb with MK01, rel_mean_mCherry (normalized to GFP and 23_34A) is 0.65, that means ~ 34% reduction in Sox2::mCherry expression. Sox2P only does not lead to such a reduction, actually has a bit more than 23_34A (1.05).
+
+
+## Plot clones
+```{r}
+filter(expression_tib_comb, total_cell_count >= 500) %>%
+  #plotting
+  ggplot(aes(x = LP_CL, y = rel_mTurq, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+  
+
+# Relative mCherry
+filter(expression_tib_comb, total_cell_count >= 500) %>%
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E2252") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+  
+```
+
+## Exclude WT and F1212 ctrls from plot
+```{r}
+## Reorder samples
+order <- c("WT","F121","23_34A","8_34_8","MK03","MK01","MK02")
+
+pClones_mT_LP = 
+filter(expression_tib_comb, total_cell_count >= 500, landing_pad_location != "none") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+
+pClones_mCh_LP = 
+filter(expression_tib_comb, total_cell_count >= 500 & landing_pad_location != "none") %>%
+   mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line 
+  stat_summary(fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black",  
+               aes(y = rel_mCherry), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E2252") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+
+
+plot_grid(pClones_mT_LP, pClones_mCh_LP, ncol = 1, align = "hv", axis = "lr")
+```
+
+## Plot FACS density
+```{r}
+# Filter for landing_pad_location LP-116kb
+LP116kb = expression_tib_comb %>% 
+  filter(landing_pad_location == "LP -116 kb") %>% 
+  pull(name)
+
+ggplot(flowset_fluo_E2252[LP116kb,], aes(x = mTurq, col = insert_name, linetype = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw()
+  
+ggplot(flowset_fluo_E2252[LP116kb,], aes(x = mTurq, col = insert_name, linetype = clone)) + #, col = as_factor(sort2))) + 
+  #facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw()
+
+
+# Filter for landing_pad_location LP-39 kb
+LP39kb = expression_tib_comb %>% 
+  filter(landing_pad_location == "LP -39 kb") %>% 
+  pull(name)
+
+ggplot(flowset_fluo_E2252[LP39kb,], aes(x = mTurq, col = insert_name, linetype = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw()
+
+
+# Plot both LPs & ctrl (F121)
+LP_both_ctrl = expression_tib_comb %>% 
+  filter(landing_pad_location %in% c("LP -39 kb", "LP -116 kb")) %>% 
+  pull(name)
+
+
+ggplot(flowset_fluo_E2252, aes(x = mTurq, col = cell_line, linetype = clone)) + #, col = as_factor(sort2))) + 
+  facet_grid(landing_pad_location ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  col_scale_MK_cl
+```
+
+# Load new FCS files from E3093
+```{r}
+myCols_insert_cell_lines <- c(
+  `CBS3x_Fw_Sox2P` = '#1b9e77',   # Teal green
+  `CBS3x_Rv_Sox2P` = '#d95f02',   # Strong orange
+  `CBS1x_Fw_Sox2P` = '#7570b3',   # Purple
+  `Sox2P` = "blue", 
+  `WT` = 'black',
+  `F121` = 'black')
+
+col_scale_MK_cl <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_cell_lines,
+  aesthetics = c("colour", "fill")
+)
+```
+
+
+## Load fcs files
+```{r}
+path_fcs_files_E3093 = "/DATA/projects/CTCF_Sox2/FACS_files/export_fcs_R_E3093_LP116/"
+
+fcs_files_E3093 = dir(path_fcs_files_E3093, full.names = T)
+fcs_files_E3093_nms = str_remove(fcs_files_E3093, "^.*/")
+
+fcs_files_E3093_nms2 = split_string(fcs_files_E3093_nms, "_", 2, 5)
+names(fcs_files_E3093) = fcs_files_E3093_nms2
+
+flowset_E3093 = read.flowSet(files = fcs_files_E3093, alter.names = T, truncate_max_range = F)
+sampleNames(flowset_E3093) = names(fcs_files_E3093)
+pData(flowset_E3093)$name = names(fcs_files_E3093)
+
+# autoplot(flowset_E3093[1:10], 'FSC.A', 'SSC.A')
+# autoplot(flowset_E3093[1:10], 'BL.B..530_30.A', 'YG.D..610_20.A')
+# autoplot(flowset_E3093[1:10], 'BL.B..530_30.A', 'V.F..450_50.A')
+# 
+flowset_fluo_E3093 = flowset_E3093[,c('BL.B..530_30.A', 'YG.D..610_20.A', 'V.F..450_50.A', 'FSC.A', 'SSC.A')]
+colnames(flowset_fluo_E3093) = c("GFP", "mCherry", "mTurq", 'FSC', 'SSC')
+```
+
+## Annotation
+```{r}
+facet_order <- c("Sox2P",
+                 "CBS1x_Fw_Sox2P",
+                 "CBS3x_Fw_Sox2P",
+                 "CBS3x_Rv_Sox2P",
+                 "WT",
+                 "F121")
+
+
+tib_annot_E3093 = tibble(sample_name = names(fcs_files_E3093)) %>%
+  mutate(cell_line = case_when(grepl("_34_", sample_name) ~ "Sox2P",
+                               grepl("_MK01", sample_name) ~ "CBS3x_Fw_Sox2P",
+                               grepl("_MK02", sample_name) ~ "CBS3x_Rv_Sox2P",
+                               grepl("_MK03", sample_name) ~ "CBS1x_Fw_Sox2P",
+                               sample_name == "23_34A_E4_E04" ~ "Sox2P",
+                               sample_name == "8_34_8_2" ~ "Sox2P",
+                               sample_name == "8_34_8_E5" ~ "Sox2P",
+                               sample_name == "F1219_GFP_mCh_2" ~ "F121",
+                               sample_name == "F1219_GFP_mCh_E3" ~ "F121",
+                               sample_name == "WT_2_D2_D02" ~ "WT",
+                               sample_name == "WT_E2_E02_Single Cells.fcs" ~ "WT"),
+         cell_line = factor(cell_line, levels = facet_order),
+         landing_pad_location = case_when(grepl("23_", sample_name) ~ "LP -116 kb",
+                                          grepl("8_", sample_name) ~ "LP -39 kb",
+                                          .default = "none"),
+         insert_name = case_when(cell_line == "CBS3x_Fw_Sox2P" ~ "CBS3x_Fw_Sox2P",
+                                 cell_line == "CBS3x_Rv_Sox2P" ~ "CBS3x_Rv_Sox2P",
+                                 cell_line == "CBS1x_Fw_Sox2P" ~ "CBS1x_Fw_Sox2P",
+                                 cell_line == "Sox2P" ~ "Sox2P",
+                                 cell_line == "Sox2P" ~ "Sox2P",
+                                 cell_line == "F121" ~ "none",
+                                 cell_line == "8_34_8" ~ "Sox2P",
+                                 cell_line == "WT" ~ "none",
+                                 .default = cell_line),
+         condition = case_when(sample_name %in% c("8_34_8_2", "8_34_8_E5", "F1219_GFP_mCh_2", "F1219_GFP_mCh_E3", "WT_2_D2_D02", "WT_E2_E02_Single Cells.fcs", "23_34A_E4_E04") ~ "ctrl",
+                               .default = "exp"),
+         LP_CL_COND = paste0(cell_line, "_", landing_pad_location, "_", condition),
+         experiment = "E3093") 
+
+pheno_data_tib_E3093 = left_join(pData(flowset_fluo_E3093), tib_annot_E3093, join_by(name == sample_name) ) 
+rownames(pheno_data_tib_E3093) = pheno_data_tib_E3093$name
+
+pData(flowset_fluo_E3093) = pheno_data_tib_E3093
+```
+
+## Load genotyping table
+1. Genotyped the insertions by PCR
+2. Genotyped the clones for the 2nd integration of the non-swapped plasmid background integration
+```{r}
+
+E3096_genotyping = read_xlsx("/DATA/projects/CTCF_Sox2/Scripts/Revisions/LP39_flipping_clones/CM20260626_E3093_conclusion_genotyping_ME20260828.xlsx")
+
+E3096_genotyping_sel = E3096_genotyping %>% select(`Launch pad`, insert, `clone number`, `conclusion genotype`, name, `median mTurq of GFP+/mCh+ cells`,`band for SB backbone`)
+  
+```
+
+
+
+## calculate expression
+For now I calculate the median expression without subtracting any autofluorescence
+```{r median_E3093}
+
+total_cell_count_tmp = flowCore::keyword(flowset_fluo_E3093, "$TOT")[,'$TOT']
+total_cell_count = as.numeric(total_cell_count_tmp)
+names(total_cell_count) = names(total_cell_count_tmp)
+
+median_mTurq = sapply(1:length(flowset_fluo_E3093), function(i){
+  median(flowCore::exprs(flowset_fluo_E3093[[i]])[,'mTurq'])
+})
+names(median_mTurq) = sampleNames(flowset_fluo_E3093)
+
+median_mCherry = sapply(1:length(flowset_fluo_E3093), function(i){
+  median(flowCore::exprs(flowset_fluo_E3093[[i]])[,'mCherry'])
+})
+names(median_mCherry) = sampleNames(flowset_fluo_E3093)
+
+
+median_GFP = sapply(1:length(flowset_fluo_E3093), function(i){
+  median(flowCore::exprs(flowset_fluo_E3093[[i]])[,'GFP'])
+})
+names(median_GFP) = sampleNames(flowset_fluo_E3093)
+
+flowCore::pData(flowset_fluo_E3093)$median_mTurq = median_mTurq
+flowCore::pData(flowset_fluo_E3093)$median_mCherry = median_mCherry
+flowCore::pData(flowset_fluo_E3093)$median_GFP = median_GFP
+
+flowCore::pData(flowset_fluo_E3093)$total_cell_count = total_cell_count
+
+fcs_tib = tibble(flowCore::pData(flowset_fluo_E3093))
+
+#Filter out clones that have weird mCherry expression
+# based on FLowjo the following clones should be removed
+# tail of loosing mCherry -  8_MK02_G5, 8_MK02_G8, 8_MK03_H5, 8_MK03_H8, 8_MK01_F3
+# completely lost mCherry - 8_MK03_H4, 8_34_E01, 8_MK01_F8
+
+
+fcs_tib_annotated <- fcs_tib %>%
+  left_join(E3096_genotyping_sel, by = "name") %>%
+  mutate(`conclusion genotype` = if_else(
+    cell_line %in% c("F121", "WT") & is.na(`conclusion genotype`),
+    "good",
+    `conclusion genotype`
+  ))
+
+fcs_tib_filt =
+fcs_tib_annotated %>% filter(! name %in% c("8_MK03_H4_H04", "8_34_E1_E01", "8_MK01_F8_F08", "8_MK02_G5_G05", "8_MK02_G8_G08", "8_MK03_H5_H05","8_MK03_H8_H08", "8_MK03_H12_H12", "8_MK01_F3_F03"))
+
+
+#fcs_tib_filt = fcs_tib_annotated
+```
+
+# Normalize expression
+```{r normalize_expression_values E3096}
+#subtract autofluorescence, normalize to GFP
+autofluo_tib_comb_E3069 = fcs_tib_filt  %>%
+  filter(cell_line == "WT") %>%
+  summarize(mTurq_WT = mean(median_mTurq),
+            mCherry_WT = mean(median_mCherry),
+            GFP_WT = mean(median_GFP))
+
+expression_tib_comb_E3069 = fcs_tib_filt %>%
+  bind_cols(autofluo_tib_comb_E3069) %>%
+  mutate(median_mTurq_cor = median_mTurq - mTurq_WT,
+         median_mCherry_cor = median_mCherry - mCherry_WT,
+         median_GFP_cor = median_GFP - GFP_WT) %>%
+  mutate(mTurq_norm = median_mTurq_cor / median_GFP_cor,
+         mCherry_norm = median_mCherry_cor / median_GFP_cor)
+
+#normalize to 23_34A (to compare between measurement days)
+# standard_tib_E3069  = expression_tib_comb_E3069 %>%
+#   filter(LP_CL_COND == "Sox2P_LP -116 kb_ctrl") %>%
+#   summarize(mTurq_norm_standard = mean(mTurq_norm),
+#            mCherry_norm_standard = mean(mCherry_norm),
+#             GFP_standard = mean(median_GFP_cor) )
+# 
+# expression_tib_comb_E3069  = expression_tib_comb_E3069 %>%
+#   bind_cols(standard_tib_E3069) %>%
+#   mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+#          rel_mCherry = mCherry_norm / mCherry_norm_standard,
+#          rel_GFP_cor = median_GFP_cor / GFP_standard)
+# 
+# stat_table =
+# expression_tib_comb_E3069 %>%
+#   group_by(cell_line, landing_pad_location) %>%
+#   summarise(mean_mCh = mean(rel_mCherry),
+#             mean_mTurq = mean(rel_mTurq))
+``` 
+
+```{r}
+# Normalize to the mean of pME034 in LP23 of all new clones
+standard_tib_E3069  = expression_tib_comb_E3069 %>%
+  filter(LP_CL_COND == "Sox2P_LP -116 kb_exp" & `conclusion genotype` == "good") %>%
+  summarize(mTurq_norm_standard = mean(mTurq_norm),
+           mCherry_norm_standard = mean(mCherry_norm),
+            GFP_standard = mean(median_GFP_cor) )
+
+expression_tib_comb_E3069  = expression_tib_comb_E3069 %>%
+  bind_cols(standard_tib_E3069) %>%
+  mutate(rel_mTurq = mTurq_norm / mTurq_norm_standard,
+         rel_mCherry = mCherry_norm / mCherry_norm_standard,
+         rel_GFP_cor = median_GFP_cor / GFP_standard)
+
+stat_table =
+expression_tib_comb_E3069 %>%
+  filter(`conclusion genotype` == "good") %>%
+  group_by(cell_line, landing_pad_location) %>%
+  summarise(mean_mCh = mean(rel_mCherry),
+            mean_mTurq = mean(rel_mTurq))
+```
+
+
+## Plot clones
+```{r}
+filter(expression_tib_comb_E3069, total_cell_count >= 500 ) %>%
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+  
+
+# Relative mCherry
+filter(expression_tib_comb_E3069, total_cell_count >= 500) %>%
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_point(position = position_jitterdodge(jitter.width = 0.8), size = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_nested(. ~ landing_pad_location  , scales = "free_x", space = "free_x") +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E2252") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+  
+```
+
+## Exclude WT and F1212 ctrls from plot and filter for genotyped clones
+```{r}
+## Reorder samples
+order <- c("WT","F121","Sox2P","CBS1x_Fw_Sox2P","CBS3x_Fw_Sox2P", "CBS3x_Rv_Sox2P")
+
+pClones_mT_LP = 
+filter(expression_tib_comb_E3069, total_cell_count >= 500, landing_pad_location != "none" & `conclusion genotype` == "good") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E3096") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+
+pClones_mCh_LP = 
+filter(expression_tib_comb_E3069, total_cell_count >= 500 & landing_pad_location != "none" & `conclusion genotype` == "good") %>%
+   mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line 
+  stat_summary(fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black",  
+               aes(y = rel_mCherry), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E3096") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+
+
+plot_grid(pClones_mT_LP, pClones_mCh_LP, ncol = 1, align = "hv", axis = "lr")
+```
+
+
+```{r}
+# Plot only LP-116kb mTurq and mCh next to each other
+pClones_mT_LP116 = 
+filter(expression_tib_comb_E3069, total_cell_count >= 500, landing_pad_location == "LP -116 kb" & `conclusion genotype` == "good") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  #facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  scale_y_continuous(breaks = seq(0, 4, by = 1)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E3096") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+
+pClones_mCh_LP116 = 
+filter(expression_tib_comb_E3069, total_cell_count >= 500 & landing_pad_location == "LP -116 kb" & `conclusion genotype` == "good") %>%
+   mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line 
+  stat_summary(fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black",  
+               aes(y = rel_mCherry), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  #facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  scale_y_continuous(breaks = seq(0, 1.2, by = 0.2)) +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, flipping clones E3096") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+
+plot_grid(pClones_mT_LP116, pClones_mCh_LP116, ncol = 2, align = "hv", axis = "lr")
+```
+
+
+```{r}
+pClones_mT_LP116 <- pClones_mT_LP116 +
+  ggtitle("mTurq")
+
+pClones_mCh_LP116 <- pClones_mCh_LP116 +
+  ggtitle("mCherry")
+
+p_combined <- plot_grid(
+  pClones_mT_LP116,
+  pClones_mCh_LP116,
+  ncol = 2,
+  align = "hv",
+  axis = "lr"
+)
+
+title <- ggdraw() +
+  draw_label(
+    "Flipping clones E3096 – LP −116 kb",
+    fontface = "bold",
+    x = 0,
+    hjust = 0
+  )
+
+plot_grid(
+  title,
+  p_combined,
+  ncol = 1,
+  rel_heights = c(0.08, 1)
+)
+```
+
+
+```{r}
+# Checking if the ones that have had a band for the background integrations are gone
+
+filter(expression_tib_comb_E3069, total_cell_count >= 500, landing_pad_location != "none") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = `band for SB backbone`)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E3096") +
+  ylab("relative reporter expression")
+```
+
+## Plot FACS E3096 density
+```{r E3096 density plot}
+
+# Plot both LPs & ctrl (F121)
+LP_both_ctrl_E3096 = expression_tib_comb_E3069 %>% 
+  filter(landing_pad_location %in% c("LP -116 kb", "none") & `conclusion genotype` == "good") %>% 
+  filter(LP_CL_COND != "Sox2P_LP -116 kb_ctrl") %>%
+  mutate(cell_line = factor(cell_line, levels = facet_order)) %>%
+  pull(name)
+
+
+pDensity_E3093_mTurq =
+ggplot(flowset_fluo_E3093[LP_both_ctrl_E3096,], aes(x = mTurq, col = cell_line, group = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  col_scale_MK_cl +
+  theme(legend.position = "bottom")
+
+
+## Plot mCherry
+pDensity_E3093_mCherry =
+ggplot(flowset_fluo_E3093[LP_both_ctrl_E3096,], aes(x = mCherry, col = cell_line, group = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -1000, breaks = c(0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  col_scale_MK_cl +
+  theme(legend.position = "none")
+
+
+plot_grid(pDensity_E3093_mTurq, pDensity_E3093_mCherry, ncol = 2, axis = "lr", align = "hv" )
+```
+
+
+
+# Combine both experiments
+Big question is how to normalize
+if i use the 23_34A measured for E3093, it doesnt really reflect the mean of the Sox2P clones, specifically for the mCherry.
+The mean of the Sox2P clones for the mTurq expression is almost exactly the same as the measeured 23_34A control from E2252, this gives me confidence that i can use the mean of the clones to normalize to. 
+So i think i will use the mean of the Sox2P clones to normalize to. 
+```{r}
+expression_tib_comb_filt = expression_tib_comb %>% 
+  select(cell_line, landing_pad_location, rel_mTurq, rel_mCherry, experiment, total_cell_count) %>%
+  mutate(cell_line = case_when(cell_line == "MK03" ~ "CBS1x_Fw_Sox2P",
+                               cell_line == "MK01" ~ "CBS3x_Fw_Sox2P",
+                               cell_line == "MK02" ~ "CBS3x_Rv_Sox2P",
+                               cell_line == "23_34A" ~ "Sox2P",
+                               .default = cell_line))
+
+
+
+expression_tib_comb_E3069_filt = expression_tib_comb_E3069 %>% 
+  filter(`conclusion genotype` == "good") %>%
+  select(cell_line, landing_pad_location, rel_mTurq, rel_mCherry, experiment, total_cell_count)
+  
+
+tib_comb = rbind(expression_tib_comb_filt, expression_tib_comb_E3069_filt)
+
+order <- c("WT","F121","23_34A", "8_34_8", "Sox2P","CBS1x_Fw_Sox2P","CBS3x_Fw_Sox2P", "CBS3x_Rv_Sox2P")
+
+pClones_mT_LP = 
+filter(tib_comb, total_cell_count >= 500, landing_pad_location != "none") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_wrap(experiment ~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E3096") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+pClones_mT_LP
+
+
+filter(tib_comb, total_cell_count >= 500, landing_pad_location != "none") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = experiment, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_nested(. ~ landing_pad_location + cell_line, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E3096") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+
+filter(tib_comb, total_cell_count >= 500, landing_pad_location != "none") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_nested(. ~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252 & E3096 combined") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+#mCherry
+filter(tib_comb, total_cell_count >= 500, landing_pad_location != "none") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_nested(. ~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252 & E3096 combined") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+```
+
+Filter out controls from E2252
+```{r}
+filter(tib_comb, total_cell_count >= 500, landing_pad_location != "none", !cell_line %in% c("23_34A", "8_34_8")) %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_nested(. ~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252 & E3096 combined") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+# col by exp
+filter(tib_comb, total_cell_count >= 500, landing_pad_location != "none", !cell_line %in% c("23_34A", "8_34_8")) %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = experiment)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_nested(. ~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "bottom",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252 & E3096 combined") +
+  ylab("relative reporter expression")
+
+
+#mCherry
+filter(tib_comb, total_cell_count >= 500, landing_pad_location != "none",!cell_line %in% c("23_34A", "8_34_8")) %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_nested(. ~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, flipping clones E2252 & E3096 combined") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+```
+
+# Plot Figure 3B
+Combined clones for LP-116kb, mCherry and mTurq
+```{r}
+
+# Plot only LP-116kb mTurq and mCh next to each other
+pClones_mT_LP116_comb = 
+filter(tib_comb, total_cell_count >= 500, landing_pad_location == "LP -116 kb") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  scale_y_continuous(breaks = seq(0, 4, by = 1)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, LP-116kb combined") +
+  ylab("relative reporter expression") +
+  col_scale_MK_cl
+
+
+pClones_mCh_LP116_comb = 
+filter(tib_comb, total_cell_count >= 500 & landing_pad_location == "LP -116 kb") %>%
+   mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = cell_line)) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line 
+  stat_summary(fun = "mean", geom = "crossbar", 
+               width = 0.5, color = "black",  
+               aes(y = rel_mCherry), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  scale_y_continuous(breaks = seq(0, 1.2, by = 0.2)) +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "none",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, LP-116kb combined") +
+  ylab("relative Sox2::mCherry expression") + 
+  col_scale_MK_cl
+
+plot_grid(pClones_mT_LP116_comb, pClones_mCh_LP116_comb, ncol = 2, align = "hv", axis = "lr")
+
+
+#Count how many clones per replicate (experiment)
+filter(tib_comb, total_cell_count >= 500 & landing_pad_location == "LP -116 kb") %>%
+    mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>% group_by(cell_line, experiment) %>% summarise(n = n())
+
+```
+
+## colored by replicates
+```{r}
+pClones_mT_LP116_comb_colrep = 
+filter(tib_comb, total_cell_count >= 500, landing_pad_location == "LP -116 kb") %>%
+  mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  ggplot(aes(x = cell_line, y = rel_mTurq, col = experiment)) +
+  geom_jitter(size = 2, width = 0.2) +
+  #stat_summary(fun = "mean", geom = "crossbar", width = 0.5, color = "black", fatten = 2) +
+  geom_hline(yintercept = 1, linetype = "dashed") +
+  geom_hline(yintercept = 0) +
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  scale_y_continuous(breaks = seq(0, 4, by = 1)) +
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust = 1),
+        legend.position = "bottom",
+        axis.title.x = element_blank()) +
+  ggtitle("mTurq, LP-116kb combined") +
+  ylab("relative reporter expression")
+
+
+pClones_mCh_LP116_comb_colrep = 
+filter(tib_comb, total_cell_count >= 500 & landing_pad_location == "LP -116 kb") %>%
+   mutate(cell_line = fct_relevel(cell_line, order[order %in% cell_line])) %>%  # avoid warnings
+  #plotting
+  ggplot(aes(x = cell_line, y = rel_mCherry, col = experiment)) +
+  geom_jitter(size = 2, width = 0.2) +
+  # add mean line 
+  # stat_summary(fun = "mean", geom = "crossbar", 
+  #              width = 0.5, color = "black",  
+  #              aes(y = rel_mCherry), fatten = 2) +
+  
+  geom_hline(yintercept = 1, linetype = "dashed") + 
+  geom_hline(yintercept = 0) + 
+  facet_wrap(~ landing_pad_location, scales = "free") +   # <— free x *and* y
+  scale_x_discrete(drop = TRUE) +                         # (default, but explicit)
+  scale_y_continuous(breaks = seq(0, 1.2, by = 0.2)) +
+  #layout
+  theme_bw() +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1),
+        legend.position = "bottom",
+        axis.title.x = element_blank()) +
+  ggtitle("mCherry, LP-116kb combined") +
+  ylab("relative Sox2::mCherry expression")
+
+plot_grid(pClones_mT_LP116_comb_colrep, pClones_mCh_LP116_comb_colrep, ncol = 2, align = "hv", axis = "lr")
+```
+
+## Density plots
+### Color scheme
+```{r color_settings V2}
+myCols_insert_cell_lines <- c(
+  `CBS3x_Fw_Sox2P` = '#1b9e77',   # Teal green
+  `CBS3x_Rv_Sox2P` = '#d95f02',   # Strong orange
+  `CBS1x_Fw_Sox2P` = '#7570b3',   # Purple
+  `Sox2P` = "blue", 
+  `WT` = 'black',
+  `F121` = 'black')
+
+col_scale_MK_cl <- scale_colour_manual(
+  name = "cell_line", 
+  values = myCols_insert_cell_lines,
+  aesthetics = c("colour", "fill")
+)
+```
+
+### E2252
+```{r}
+# Filter for landing_pad_location LP-116kb
+# Filter samples
+LP116kb <- expression_tib_comb %>% 
+  filter(landing_pad_location %in% c("LP -116 kb", "none")) %>% 
+  pull(name)
+
+# Subset flowSet
+fs_LP116 <- flowset_fluo_E2252[LP116kb, ]
+
+# Set facet order in the flowSet metadata
+pData(fs_LP116)$insert_name <- factor(
+  pData(fs_LP116)$insert_name,
+  levels = facet_order)
+
+pDensity_E2252_mTurq =
+ggplot(fs_LP116, aes(x = mTurq, col = insert_name, group = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(insert_name ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  #coord_cartesian(xlim = c(-2000, 30000)) +
+  col_scale_MK_cl +
+  theme(legend.position = "bottom")
+
+
+pDensity_E2252_mCh =
+ggplot(fs_LP116, aes(x = mCherry, col = insert_name, group = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(insert_name ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  theme_bw() +
+  #coord_cartesian(xlim = c(-2000, 30000)) +
+  col_scale_MK_cl +
+  theme(legend.position = "none")
+
+plot_grid(pDensity_E2252_mTurq, pDensity_E2252_mCh, ncol = 2, axis = "lr", align = "hv" )
+```
+
+### E3096
+```{r E3096}
+
+# Plot both LPs & ctrl (F121)
+LP_both_ctrl_E3096 = expression_tib_comb_E3069 %>% 
+  filter(landing_pad_location %in% c("LP -116 kb", "none") & `conclusion genotype` == "good") %>% 
+  filter(LP_CL_COND != "Sox2P_LP -116 kb_ctrl") %>%
+  mutate(cell_line = factor(cell_line, levels = facet_order)) %>%
+  pull(name)
+
+
+pDensity_E3093_mTurq =
+ggplot(flowset_fluo_E3093[LP_both_ctrl_E3096,], aes(x = mTurq, col = cell_line, group = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+   ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  coord_cartesian(xlim = c(-2000, 30000)) +
+  theme_bw() +
+  col_scale_MK_cl +
+  theme(legend.position = "bottom")
+
+
+## Plot mCherry
+pDensity_E3093_mCherry =
+ggplot(flowset_fluo_E3093[LP_both_ctrl_E3096,], aes(x = mCherry, col = cell_line, group = name)) + #, col = as_factor(sort2))) + 
+  facet_grid(cell_line ~ .) +
+  geom_density() +
+  ggcyto::scale_x_flowjo_biexp(widthBasis = -100, breaks = c(-10^3, 0, 10^3, 10^4, 10^5),
+                               pos = 4.42) +
+  coord_cartesian(xlim = c(-2000, 30000)) +
+  theme_bw() +
+  col_scale_MK_cl +
+  theme(legend.position = "none")
+
+
+plot_grid(pDensity_E3093_mTurq, pDensity_E3093_mCherry, ncol = 2, axis = "lr", align = "hv" )
+```

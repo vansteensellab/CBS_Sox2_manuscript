@@ -17,3 +17,6 @@ This repository contains information about
 - General functions: includes the calculation of expression score
 - Figures: R markdown files to create paper figures
 - Pipline for genotyping 1xCBS_Fw_Sox2P clones
+
+## New
+I updated the code (or parts of the code) for generating figure 1, figure 2, figure 3, figure 4 to include/exclude new analysis based on the revisions. 

@@ -1,0 +1,1020 @@
+---
+title: "me20260825_Figure1_Brosh_annotations_revision"
+author: "Mathias"
+date: "2026-08-25"
+output: 
+  html_document:
+    theme: journal
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+editor_options:
+  chunk_output_type: console
+---
+
+# Aim
+
+Plot the 3D configuration of the mouse Sox2 locus using Region Capture
+Micro-C data (GSM6281849) from Goel et al.
+
+The RCMC data are mapped to mm39. Most genomic annotations used in our
+analyses are in mm10.
+
+Therefore:
+
+1. genomic annotations are defined in mm10;
+2. annotations are lifted from mm10 to mm39 for plotting;
+3. the GENOVA pyramid itself is plotted in mm39;
+4. the displayed genomic x-axis is converted back to mm10 coordinates.
+
+Brosh/Maurano and Ribeiro dos Santos annotations are included to show the
+Sox2 proximal regulatory region and the distal DHS/CTCF architecture.
+
+
+# Load libraries
+
+```{r load_libraries}
+# -------------------------------------------------------------------------
+# IMPORTANT:
+# Restart R before running this chunk.
+# ggplot2 3.5.2 must be loaded BEFORE GENOVA.
+# -------------------------------------------------------------------------
+
+ggplot_old_lib <- "/DATA/usr/m.eder/R/ggplot2_3x"
+
+# Make sure GENOVA / ggplot2 are not already loaded
+if ("GENOVA" %in% loadedNamespaces()) {
+  stop(
+    "GENOVA is already loaded. Restart R and run this script from the top."
+  )
+}
+
+if ("ggplot2" %in% loadedNamespaces()) {
+  stop(
+    "ggplot2 is already loaded. Restart R and run this script from the top."
+  )
+}
+
+
+# Explicitly load ggplot2 3.5.2
+library(
+  ggplot2,
+  lib.loc = ggplot_old_lib
+)
+
+# Confirm correct version
+stopifnot(
+  packageVersion("ggplot2") == package_version("3.5.2")
+)
+
+message(
+  "Using ggplot2 version ",
+  packageVersion("ggplot2"),
+  " from ",
+  find.package("ggplot2")
+)
+
+
+# -------------------------------------------------------------------------
+# Other libraries
+# -------------------------------------------------------------------------
+
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dtplyr)
+library(dplyr)
+library(tidyr)
+library(ggbeeswarm)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(purrr)
+library(RcppRoll)
+library(viridis)
+library(ggh4x)
+
+# GENOVA LAST
+library(GENOVA)
+
+# Check ggplot version again after loading GENOVA
+stopifnot(
+  packageVersion("ggplot2") == package_version("3.5.2")
+)
+
+
+# -------------------------------------------------------------------------
+# Helper function
+# -------------------------------------------------------------------------
+
+split_string <- function(vect, sep, N1, N2 = N1) {
+  sapply(
+    vect,
+    function(X) {
+      paste(
+        str_split(X, sep)[[1]][N1:N2],
+        collapse = sep
+      )
+    },
+    USE.NAMES = FALSE
+  )
+}
+```
+
+# Paths and parameters
+```{r}
+
+setwd("/DATA/projects/CTCF_Sox2/Scripts/Revisions/Figure1_Brosh_annotations_ME20260825")
+
+# Date tag
+datetag <- paste0("ME",
+  format(Sys.time(), "%Y%m%d"))
+
+# Output directory
+output_dir <- paste0("/DATA/projects/CTCF_Sox2/Scripts/Revisions/Figure1_Brosh_annotations_ME20260825/figure1_",
+  datetag)
+
+dir.create(output_dir,
+  showWarnings = FALSE,
+  recursive = TRUE)
+
+figure_dir <- file.path(output_dir,
+  "figure_1")
+
+dir.create(figure_dir,
+  showWarnings = FALSE,
+  recursive = TRUE)
+```
+
+#Knitr setup
+```{r}
+opts_chunk$set(fig.width = 20,
+  fig.height = 8,
+  # Keep FALSE while working with different ggplot versions
+  cache = FALSE,
+  message = FALSE,
+  warning = FALSE,
+  dev = c("png", "pdf"),
+  dpi = 600,
+  fig.path = paste0(
+    figure_dir,
+    "/"))
+
+pdf.options(useDingbats = FALSE)
+```
+
+#File paths
+```{r}
+path_CTCF_sites = "/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed"
+```
+# Relevant annotations
+```{r element_coordinates}
+
+# Location of enhancer / gene
+enhancer <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34753415,
+                                     end = 34766401),
+                    strand = "*")
+
+#gene based on mm10, ucsc browser, RefSeq annotation
+# Sox2
+# chr3:34649995-34652461 (+)
+# id = NM_011443.4
+Sox2_gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34649995,
+                                     end = 34652461),
+                    strand = "+")
+
+
+landingPad_23 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34643960,
+                                     end = 34643962),
+                    strand = "+")
+
+landingPad_8 <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34721183,
+                                     end = 34721184),
+                    strand = "+")
+
+
+LP_tib = tibble(launch_pad_location = c("-116 kb", "-39 kb"), 
+                start = c( start(landingPad_23),start(landingPad_8)))
+
+#CTCF sites based on our own mapping
+# new analysis (based on mapping to mm10 only)
+CTCF_mm10_new <- import.bed('/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed')
+
+#filtering:
+CTCF_mm10.chr3 <- CTCF_mm10_new[seqnames(CTCF_mm10_new)== 'chr3']
+# add the missing site after the SCR
+CTCF_mm10.chr3_extra = sort(c(CTCF_mm10.chr3,
+                         GRanges(seqnames = "chr3",
+                                 IRanges(start = 34772210, end = 34772210),
+                                 strand = "+")),
+                         ignore.strand = T)
+
+
+prange_zoom = c(34500000 , 35000000)
+prange2 = c(34000000, 35500000)
+prange_far = c(32000000, 37000000)
+#zoom in on only the SCR +- 50kb
+prange_LP = c(start(landingPad_23)-5E4, end(landingPad_23)+5E4)
+prange_SCR = c(start(enhancer)-5E4, end(enhancer)+5E4)
+prange_plot = c(32643960, 36643960) #+/- 2MB from landing pad
+prange_loop = c(34631804, 34778268)
+prange_zoom = c(34.5E6, 35E6)
+prange_zoom_paper = c(34.59E6, 34.83E6)
+prange_SCR = c(34.725E6, 34.785E6)
+```
+
+# 3D genome annotation
+## LiftOver chains
+```{r}
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm9/liftOver/mm9ToMm10.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm9ToMm10.over.chain.gz")
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm10/liftOver/mm10ToMm9.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm9.over.chain.gz")
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm39/liftOver/mm39ToMm10.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm39ToMm10.over.chain.gz")
+# download.file('https://hgdownload.soe.ucsc.edu/goldenPath/mm10/liftOver/mm10ToMm39.over.chain.gz',
+#               "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm39.over.chain.gz")
+
+# library(R.utils)
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm9ToMm10.over.chain.gz")
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm9.over.chain.gz")
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm39ToMm10.over.chain.gz")
+# gunzip("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm39.over.chain.gz")
+
+chain_mm9_to_mm10 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm9ToMm10.over.chain")
+chain_mm10_to_mm9 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm9.over.chain")
+chain_mm10_to_mm39 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm10ToMm39.over.chain")
+chain_mm39_to_mm10 = import.chain("/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/mm39ToMm10.over.chain")
+#landingPad_23_mm39= liftOver()
+
+```
+
+## Load RCMC data
+```{r}
+WT_file = "/DATA/usr/c.moene/projects/Hopping_Sox2_mTurq/general_analyses/region_capture_microC/CM20230718_GSM6281849_RCMC_BR1_merged_allCap_WT_mm39.merged.50.mcool"
+
+RCMC_1kb = load_contacts(signal_path = WT_file,
+                      sample_name = 'WT',
+                      resolution = 1000)
+
+RCMC_5kb = load_contacts(signal_path = WT_file,
+                      sample_name = 'WT',
+                      resolution = 5000)
+```
+
+```{r A_RCMC_pyramid_annotated, fig.width = 7.2, fig.height = 3}
+#plotting range on mm39
+plot_range_hiC = c(34.65E6,
+                   34.9E6)
+
+#annotations
+annotation_gr_mm10 = c(Sox2_gene, enhancer)
+names(annotation_gr_mm10) = c("Sox2", "SCR")
+
+annotation_gr_mm39 = unlist(liftOver(annotation_gr_mm10, chain_mm10_to_mm39))
+bed_tib_mm39 = as_tibble(annotation_gr_mm39)
+
+# CTCF annotation
+CTCF_ROI_mm10 = subsetByOverlaps(CTCF_mm10.chr3_extra, GRanges(seqnames = "chr3", IRanges(start = 30E6, end = 40E6)))
+CTCF_ROI_mm39 = unlist(liftOver(CTCF_ROI_mm10, chain_mm10_to_mm39))
+CTCF_ROI_mm39_tib = as_tibble(CTCF_ROI_mm39)
+  
+p <- GENOVA::pyramid(
+  exp = RCMC_1kb,
+  chrom = "chr3",
+  colour = c(0, 1500),
+  start = plot_range_hiC[1],
+  end = plot_range_hiC[2]
+)
+
+p + 
+  geom_rect(data = bed_tib_mm39, aes(xmin = start, xmax = end), ymin = -30E3, ymax = -10E3) +
+  geom_segment(data = CTCF_ROI_mm39_tib, aes(x = start, xend = start, col = strand), y = -30E3, yend = -10E3) +
+  geom_vline(xintercept = start(CTCF_ROI_mm39), col = 'darkgrey',linetype = 'dotted')
+
+```
+
+# Load Brosh - Maurano annotations
+```{r}
+
+# =========================================================================
+# Original Brosh / Maurano payload coordinates
+# =========================================================================
+
+Brosh_coordinates <- read_tsv(
+  "/DATA/projects/CTCF_Sox2/external_datasets/annotations_Brosh_paper/Maurano_genomic_coordinates_excel.tsv",
+  show_col_types = FALSE
+)
+
+
+Brosh_table_S4 <- read_tsv(
+  "/DATA/projects/CTCF_Sox2/external_datasets/annotations_Brosh_paper/Maurano_TableS4_excel.tsv",
+  show_col_types = FALSE
+)
+
+
+# =========================================================================
+# Ribeiro dos Santos DHS / Sox2 annotation table
+# PMID 41125441
+# Coordinates are mm10
+# =========================================================================
+
+Ribeiro_Brosh_DHS_annotations <- read_tsv(
+  "/DATA/projects/CTCF_Sox2/external_datasets/annotations_Brosh_paper/Ribeiro_Dos_Santos_PMID_41125441_Supplemental_Table_S1.tsv",
+  show_col_types = FALSE
+)
+
+
+# -------------------------------------------------------------------------
+# Clean Brosh Table S4 column names
+# -------------------------------------------------------------------------
+
+Brosh_table_S4 <- Brosh_table_S4 %>%
+  rename(
+    Payload_ID = `Payload ID`,
+    Clone_ID = `Clone ID`,
+    Sox2_CAST = `Sox2 (CAST)`,
+    Sox2_BL6 = `Sox2 (BL6)`,
+    Fold_change = `Fold change`
+  )
+
+
+Brosh_coordinates <- Brosh_coordinates %>%
+  rename(
+    chrom = `#chrom`
+  )
+
+
+# -------------------------------------------------------------------------
+# Clean Ribeiro table
+# -------------------------------------------------------------------------
+
+Ribeiro_Brosh_DHS_annotations <- Ribeiro_Brosh_DHS_annotations %>%
+  rename(
+    chrom = `#Chrom`,
+    chromStart = ChromStart,
+    chromEnd = ChromEnd,
+    name = Name
+  )
+
+
+# -------------------------------------------------------------------------
+# Merge Brosh payload coordinates with Table S4 annotation
+# -------------------------------------------------------------------------
+
+Brosh_table_S4_sel <- Brosh_table_S4 %>%
+  select(
+    Groups,
+    Payload_ID,
+    Label
+  ) %>%
+  rename(
+    name = Payload_ID
+  ) %>%
+  distinct()
+
+
+Brosh_coordinates_merged <- Brosh_coordinates %>%
+  left_join(
+    Brosh_table_S4_sel,
+    by = "name"
+  )
+
+
+# Inspect Ribeiro annotations
+Ribeiro_Brosh_DHS_annotations
+```
+
+## Define mm10 plotting range and convert it to mm39
+```{r}
+
+# =========================================================================
+# IMPORTANT:
+#
+# We define the region we want to SEE in mm10.
+#
+# GENOVA needs the corresponding mm39 coordinates because the Micro-C
+# contact matrix itself is mm39.
+# =========================================================================
+
+
+plot_range_mm10 <- c(
+  34.59E6,
+  34.83E6
+)
+
+
+# -------------------------------------------------------------------------
+# Lift the two boundaries mm10 -> mm39
+# -------------------------------------------------------------------------
+
+plot_range_points_mm10 <- GRanges(
+  seqnames = rep(
+    "chr3",
+    2
+  ),
+  ranges = IRanges(
+    start = plot_range_mm10,
+    end = plot_range_mm10
+  )
+)
+
+
+plot_range_lifted <- liftOver(
+  plot_range_points_mm10,
+  chain_mm10_to_mm39
+)
+
+
+# Each boundary should map exactly once
+if (any(lengths(plot_range_lifted) != 1)) {
+  stop(
+    "One or both plotting-range boundaries did not map uniquely from mm10 to mm39."
+  )
+}
+
+
+plot_range_mm39 <- start(
+  unlist(
+    plot_range_lifted,
+    use.names = FALSE
+  )
+)
+
+
+plot_range_mm39 <- sort(
+  plot_range_mm39
+)
+
+
+message(
+  "mm10 plotting range: ",
+  paste(plot_range_mm10, collapse = " - ")
+)
+
+message(
+  "mm39 plotting range: ",
+  paste(plot_range_mm39, collapse = " - ")
+)
+
+```
+
+## Prepare mm10 x-axis lables for the mm39 plot
+```{r}
+
+# =========================================================================
+# Generate axis tick positions in mm10
+#
+# The ticks are then lifted to mm39 so that their position matches the
+# mm39 contact matrix.
+#
+# Their LABELS remain the original mm10 coordinates.
+# =========================================================================
+
+
+axis_tick_spacing <- 50E3
+
+
+axis_breaks_mm10 <- seq(
+  ceiling(
+    plot_range_mm10[1] / axis_tick_spacing
+  ) * axis_tick_spacing,
+
+  floor(
+    plot_range_mm10[2] / axis_tick_spacing
+  ) * axis_tick_spacing,
+
+  by = axis_tick_spacing
+)
+
+
+axis_ticks_gr_mm10 <- GRanges(
+  seqnames = rep(
+    "chr3",
+    length(axis_breaks_mm10)
+  ),
+  ranges = IRanges(
+    start = axis_breaks_mm10,
+    end = axis_breaks_mm10
+  )
+)
+
+
+axis_ticks_lifted <- liftOver(
+  axis_ticks_gr_mm10,
+  chain_mm10_to_mm39
+)
+
+
+# Keep only uniquely mapped tick positions
+valid_axis_ticks <- lengths(
+  axis_ticks_lifted
+) == 1
+
+
+axis_breaks_mm39 <- start(
+  unlist(
+    axis_ticks_lifted[valid_axis_ticks],
+    use.names = FALSE
+  )
+)
+
+
+axis_labels_mm10 <- sprintf(
+  "%.2f",
+  axis_breaks_mm10[valid_axis_ticks] / 1E6
+)
+
+
+# Check correspondence
+axis_conversion_table <- tibble(
+  mm10 = axis_breaks_mm10[valid_axis_ticks],
+  mm39 = axis_breaks_mm39,
+  label = axis_labels_mm10
+)
+
+axis_conversion_table
+
+```
+
+## Llift Sox2 and SCR annotations mm10 -> mm39
+```{r}
+
+annotation_gr_mm10 <- c(
+  Sox2_gene,
+  enhancer
+)
+
+
+# "element" is reserved by GRanges, therefore use "feature"
+mcols(annotation_gr_mm10)$feature <- c(
+  "Sox2",
+  "SCR"
+)
+
+
+annotation_gr_mm39 <- unlist(
+  liftOver(
+    annotation_gr_mm10,
+    chain_mm10_to_mm39
+  ),
+  use.names = FALSE
+)
+
+
+bed_tib_mm39 <- as_tibble(
+  annotation_gr_mm39
+)
+```
+
+## Lift launch pad
+```{r}
+
+LP_gr_mm10 <- c(
+  landingPad_23,
+  landingPad_8
+)
+
+
+mcols(LP_gr_mm10)$feature <- c(
+  "LP -116 kb",
+  "LP -39 kb"
+)
+
+
+LP_gr_mm39 <- unlist(
+  liftOver(
+    LP_gr_mm10,
+    chain_mm10_to_mm39
+  ),
+  use.names = FALSE
+)
+
+
+LP_tib_mm39 <- as_tibble(
+  LP_gr_mm39
+)
+
+LP_tib_mm39
+
+```
+
+## Lift CTCF sites
+```{r}
+
+# =========================================================================
+# Restrict CTCF sites to the actual mm10 plotting region BEFORE liftover.
+#
+# This prevents off-panel annotations from expanding/squishing the plot.
+# =========================================================================
+
+
+plot_region_gr_mm10 <- GRanges(
+  seqnames = "chr3",
+  ranges = IRanges(
+    start = plot_range_mm10[1],
+    end = plot_range_mm10[2]
+  )
+)
+
+
+CTCF_ROI_mm10 <- subsetByOverlaps(
+  CTCF_mm10.chr3_extra,
+  plot_region_gr_mm10
+)
+
+
+CTCF_ROI_mm39 <- unlist(
+  liftOver(
+    CTCF_ROI_mm10,
+    chain_mm10_to_mm39
+  ),
+  use.names = FALSE
+)
+
+
+CTCF_ROI_mm39_tib <- as_tibble(
+  CTCF_ROI_mm39
+)
+
+```
+
+## Prepare Ribeiro / Brosh regulatory annotaions
+```{r}
+
+# =========================================================================
+# Selected annotations:
+#
+# Sox2Proximal = broad proximal regulatory region
+# Sox2Promoter = promoter interval
+#
+# DHS19-27 and CTCF25/28 = individually mapped distal regulatory elements
+#
+# Sox2LCR is not plotted here because we already display our SCR interval
+# separately and the individual distal elements provide more information.
+# =========================================================================
+
+
+Ribeiro_annotations_to_plot <- c(
+  "Sox2Proximal",
+  "Sox2Promoter",
+  "Sox2DHS19",
+  "Sox2DHS20",
+  "Sox2DHS21",
+  "Sox2DHS22",
+  "Sox2DHS23",
+  "Sox2DHS24",
+  "Sox2CTCF25",
+  "Sox2DHS26",
+  "Sox2DHS27",
+  "Sox2CTCF28"
+)
+
+
+Ribeiro_plot_mm10 <- Ribeiro_Brosh_DHS_annotations %>%
+  filter(
+    name %in% Ribeiro_annotations_to_plot
+  )
+
+
+# Make sure all requested annotations were found
+missing_Ribeiro_annotations <- setdiff(
+  Ribeiro_annotations_to_plot,
+  Ribeiro_plot_mm10$name
+)
+
+
+if (length(missing_Ribeiro_annotations) > 0) {
+  warning(
+    "Missing Ribeiro annotations: ",
+    paste(
+      missing_Ribeiro_annotations,
+      collapse = ", "
+    )
+  )
+}
+
+
+# -------------------------------------------------------------------------
+# Convert mm10 table -> GRanges
+#
+# ChromStart / ChromEnd are treated as BED-style coordinates.
+# starts.in.df.are.0based = TRUE converts the start appropriately.
+# -------------------------------------------------------------------------
+
+Ribeiro_gr_mm10 <- makeGRangesFromDataFrame(
+  Ribeiro_plot_mm10,
+  seqnames.field = "chrom",
+  start.field = "chromStart",
+  end.field = "chromEnd",
+  keep.extra.columns = TRUE,
+  starts.in.df.are.0based = TRUE
+)
+
+
+# -------------------------------------------------------------------------
+# Liftover mm10 -> mm39
+# -------------------------------------------------------------------------
+
+Ribeiro_lifted <- liftOver(
+  Ribeiro_gr_mm10,
+  chain_mm10_to_mm39
+)
+
+
+if (any(lengths(Ribeiro_lifted) == 0)) {
+  warning(
+    "One or more Ribeiro annotations failed liftover."
+  )
+}
+
+
+if (any(lengths(Ribeiro_lifted) > 1)) {
+  warning(
+    "One or more Ribeiro annotations mapped to multiple mm39 intervals."
+  )
+}
+
+
+Ribeiro_gr_mm39 <- unlist(
+  Ribeiro_lifted,
+  use.names = FALSE
+)
+
+
+Ribeiro_tib_mm39 <- as_tibble(
+  Ribeiro_gr_mm39
+)
+
+
+# -------------------------------------------------------------------------
+# Separate broad proximal region / promoter / distal elements
+# -------------------------------------------------------------------------
+
+Ribeiro_proximal_mm39 <- Ribeiro_tib_mm39 %>%
+  filter(
+    name == "Sox2Proximal"
+  )
+
+
+Ribeiro_promoter_mm39 <- Ribeiro_tib_mm39 %>%
+  filter(
+    name == "Sox2Promoter"
+  )
+
+
+Ribeiro_distal_mm39 <- Ribeiro_tib_mm39 %>%
+  filter(
+    str_detect(
+      name,
+      "^Sox2(DHS|CTCF)"
+    )
+  ) %>%
+  mutate(
+    plot_label = str_remove(
+      name,
+      "^Sox2"
+    )
+  )
+
+
+# Inspect final lifted annotations
+Ribeiro_tib_mm39 %>%
+  select(
+    seqnames,
+    start,
+    end,
+    name,
+    Reference
+  )
+
+```
+
+## Plot annotated region capture micro-C
+```{r}
+
+# =========================================================================
+# Contact matrix = mm39
+# Displayed genomic coordinates = mm10
+# =========================================================================
+
+
+p <- GENOVA::pyramid(
+  exp = RCMC_1kb,
+  chrom = "chr3",
+  colour = c(
+    0,
+    1500
+  ),
+  start = plot_range_mm39[1],
+  end = plot_range_mm39[2]
+)
+
+
+p_annotated <- p +
+
+
+  # =======================================================================
+  # Sox2 gene and SCR
+  # =======================================================================
+
+  geom_rect(
+    data = bed_tib_mm39,
+    aes(
+      xmin = start,
+      xmax = end
+    ),
+    ymin = -30E3,
+    ymax = -15E3,
+    inherit.aes = FALSE,
+    fill = "grey50"
+  ) +
+
+
+  geom_text(
+    data = bed_tib_mm39,
+    aes(
+      x = (start + end) / 2,
+      y = -22.5E3,
+      label = feature
+    ),
+    inherit.aes = FALSE,
+    size = 2.8
+  ) +
+
+
+  # =======================================================================
+  # CTCF sites
+  # =======================================================================
+
+  geom_segment(
+    data = CTCF_ROI_mm39_tib,
+    aes(
+      x = start,
+      xend = start,
+      colour = strand
+    ),
+    y = -30E3,
+    yend = -15E3,
+    inherit.aes = FALSE,
+    linewidth = 0.7
+  ) +
+
+
+  # Vertical guides through Micro-C plot
+  geom_vline(
+    xintercept = start(
+      CTCF_ROI_mm39
+    ),
+    colour = "darkgrey",
+    linetype = "dotted",
+    linewidth = 0.3
+  ) +
+
+
+  # =======================================================================
+  # Launch pads
+  # =======================================================================
+
+  geom_vline(
+    data = LP_tib_mm39,
+    aes(
+      xintercept = start
+    ),
+    linetype = "dashed",
+    linewidth = 0.5,
+    inherit.aes = FALSE
+  ) +
+
+
+  geom_text(
+    data = LP_tib_mm39,
+    aes(
+      x = start,
+      y = -34E3,
+      label = feature
+    ),
+    inherit.aes = FALSE,
+    angle = 90,
+    hjust = 1,
+    size = 2.5
+  ) +
+
+
+  # =======================================================================
+  # Ribeiro / Brosh proximal regulatory region
+  # =======================================================================
+
+  geom_rect(
+    data = Ribeiro_proximal_mm39,
+    aes(
+      xmin = start,
+      xmax = end
+    ),
+    ymin = -52E3,
+    ymax = -42E3,
+    inherit.aes = FALSE,
+    fill = "grey80"
+  ) +
+
+
+  geom_text(
+    data = Ribeiro_proximal_mm39,
+    aes(
+      x = (start + end) / 2,
+      y = -47E3
+    ),
+    label = "Sox2 proximal region",
+    inherit.aes = FALSE,
+    size = 2.5
+  ) +
+
+
+  # =======================================================================
+  # Ribeiro / Brosh promoter annotation
+  # Drawn inside the proximal-region track
+  # =======================================================================
+
+  geom_rect(
+    data = Ribeiro_promoter_mm39,
+    aes(
+      xmin = start,
+      xmax = end
+    ),
+    ymin = -52E3,
+    ymax = -42E3,
+    inherit.aes = FALSE,
+    fill = "grey35"
+  ) +
+
+
+  # =======================================================================
+  # Individually annotated distal DHS / CTCF elements
+  # =======================================================================
+
+  geom_rect(
+    data = Ribeiro_distal_mm39,
+    aes(
+      xmin = start,
+      xmax = end
+    ),
+    ymin = -68E3,
+    ymax = -58E3,
+    inherit.aes = FALSE,
+    fill = "grey60"
+  ) +
+
+
+  geom_text(
+    data = Ribeiro_distal_mm39,
+    aes(
+      x = (start + end) / 2,
+      y = -70E3,
+      label = plot_label
+    ),
+    inherit.aes = FALSE,
+    angle = 90,
+    hjust = 1,
+    size = 2.1
+  ) +
+
+
+  # =======================================================================
+  # X AXIS
+  #
+  # Positions are mm39,
+  # labels are the corresponding original mm10 coordinates.
+  #
+  # limits + zero expansion prevent the axis from extending beyond the
+  # Micro-C panel and prevent the plot from being horizontally squished.
+  # =======================================================================
+
+  scale_x_continuous(
+    breaks = axis_breaks_mm39,
+    labels = axis_labels_mm10,
+    limits = plot_range_mm39,
+    expand = expansion(
+      mult = c(
+        0,
+        0
+      )
+    ),
+    name = "Genomic coordinate (Mb, mm10)"
+  ) +
+
+
+  theme(
+    legend.position = "right"
+  )
+
+p_annotated
+```
+

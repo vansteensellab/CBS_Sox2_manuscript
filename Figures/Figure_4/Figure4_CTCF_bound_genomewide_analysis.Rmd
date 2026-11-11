@@ -1,0 +1,445 @@
+---
+title: "CTCF genomewide analysis"
+author: "Mathias"
+date: "2025-11-14"
+output: 
+  html_document:
+    theme: journal
+    highlight: monochrome
+    toc: true
+    toc_float: true
+    code_folding: show
+editor_options:
+  chunk_output_type: console
+---
+
+#Revisions
+Both reviewers were demanding to repeat the analysis of the genome wide CTCF binding site bias toward bound CBS motifs. Therefore I will repeat the anlaysis with the bound CBS from our own ChIP-seq data!
+
+#Aim
+In our reporer hopping experiments we saw that CBS-Sox2P aligned in the same orienation have a favored functional outcome. Therefore we wanted to check if there is a bias genomewide. 
+
+
+# Install packages
+```{r}
+# BiocManager::install("AnnotationHub", update = FALSE)
+# BiocManager::install("plyranges", update = FALSE)
+
+library(GenomicRanges)
+library(AnnotationHub)
+library(plyranges)
+library(knitr)
+library(GenomicRanges)
+library(rtracklayer)
+library(gtools)
+library(tidyverse)
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggbeeswarm)
+library(Biostrings)
+library(stringr)
+library(readr)
+library(knitr)
+library(RColorBrewer)
+library(purrr)
+library(ggpubr)
+library(cowplot)
+library(biomaRt)
+library(org.Mm.eg.db)
+library(TxDb.Mmusculus.UCSC.mm10.knownGene)
+library(gUtils)      # for gr.flipstrand
+library(tibble)
+
+```
+
+# Paths & parameters
+```{r paths_parameters}
+#set working directory
+setwd("/DATA/projects/CTCF_Sox2/Scripts/Revisions/Figure4_genome_wide_analysis")
+
+#datatag
+datetag = paste0("ME",format(Sys.time(), '%Y%m%d'))
+
+# Prepare output 
+output_dir <- paste0("CTCF_gene_genomewide_",datetag)
+dir.create(output_dir, showWarnings = FALSE)
+
+```
+
+```{r knits setup}
+opts_chunk$set(fig.width = 20, fig.height = 8, cache = T,
+               message = F, warning = F,
+               dev=c('png', 'pdf'), 
+               fig.path = file.path(output_dir, "figures/")) 
+pdf.options(useDingbats = FALSE)
+```
+
+## Annotations
+```{r}
+Sox2_gene <- GRanges(seqnames = "chr3", 
+                    ranges = IRanges(start = 34649995,
+                                     end = 34652461),
+                    strand = "+")
+
+## 1) Get Entrez ID for Nanog
+nanog_entrez <- AnnotationDbi::select(
+  org.Mm.eg.db,
+  keys    = "Nanog",
+  keytype = "SYMBOL",
+  columns = "ENTREZID"
+)$ENTREZID
+
+## 2) Get all genes from TxDb and subset to Nanog
+genes_txdb <- genes(TxDb.Mmusculus.UCSC.mm10.knownGene)
+
+Nanog_gene <- genes_txdb[mcols(genes_txdb)$gene_id == nanog_entrez]
+Nanog_gene
+```
+
+# Load data
+So every transcript gets a TSS. That means:
+Genes with many isoforms get many TSSs, and so more weight in all counts and metaplots.
+The analysis is per transcript.
+```{r load data}
+# TSSs (TxDb knownGene)
+TSSs_all_transcripts <- resize(transcripts(TxDb.Mmusculus.UCSC.mm10.knownGene), width = 1, fix = "start")
+TSSs_regular_chr <- keepStandardChromosomes(TSSs_all_transcripts, pruning.mode = "coarse")
+
+# filter for unique TSS start sites
+TSSs_unique <- unique(TSSs_regular_chr)
+```
+
+## Load mESCs CBS
+```{r load CTCF ChIP seq data}
+#CTCF sites based on our own mapping
+
+CTCF_mm10_ChIP <- import.bed("/DATA/usr/v.franceschini/Workspaces/2024_01_MATHIAS_CTCF_PEAKS/VF240812_calling_CTCF_motifs_again/02_OUTPUTS/CTCF_sites/6764_2_ME_E2_CGATGT_S2_R1_001_peaks_motifs.bed")
+
+```
+
+# Unanimity-aware per-TSS classification
+upstream/downstream relative to transcription direction
+```{r TSS classification}
+# the classifier makes a decision based on TSS, if there are 2 in same and 3 in opposite it will get into the mixed bag
+
+classify_ctcf_by_orientation <- function(TSSs, CTCF, window_size = 2500) {
+  upstream_region   <- promoters(TSSs, upstream = window_size, downstream = 0)
+  downstream_region <- promoters(TSSs, upstream = 0, downstream = window_size)
+
+  classify_region <- function(region_gr, region_label) {
+    # Count same- and opposite-orientation overlaps separately
+    hits_same <- findOverlaps(CTCF, region_gr,                  ignore.strand = FALSE)
+    hits_opp  <- findOverlaps(CTCF, gr.flipstrand(region_gr),   ignore.strand = FALSE)
+
+    df_same <- tibble(tss_ix = subjectHits(hits_same)) %>% count(tss_ix, name = "n_same")
+    df_opp  <- tibble(tss_ix = subjectHits(hits_opp))  %>% count(tss_ix, name = "n_opp")
+
+    df <- full_join(df_same, df_opp, by = "tss_ix") %>%
+      mutate(
+        n_same = replace_na(n_same, 0L),
+        n_opp  = replace_na(n_opp,  0L),
+        region = region_label,
+        class  = case_when(
+          n_same > 0 & n_opp == 0 ~ "all_same",
+          n_opp  > 0 & n_same == 0 ~ "all_opposite",
+          n_same > 0 & n_opp  > 0 ~ "mixed",
+          TRUE                    ~ "none"
+        )
+      )
+
+    # Ensure every TSS is represented
+    tibble(tss_ix = seq_along(region_gr)) %>%
+      left_join(df, by = "tss_ix") %>%
+      mutate(
+        region = region_label,
+        n_same = replace_na(n_same, 0L),
+        n_opp  = replace_na(n_opp,  0L),
+        class  = replace_na(class,  "none")
+      )
+  }
+
+  bind_rows(
+    classify_region(upstream_region,   "upstream"),
+    classify_region(downstream_region, "downstream")
+  )
+}
+
+# Run once at 2.5 kb
+res_class <- classify_ctcf_by_orientation(TSSs_unique, CTCF_mm10_ChIP, window_size = 2500)
+res_summary <- res_class %>% count(region, class, name = "n_TSS") %>% arrange(region, class)
+res_summary
+
+```
+
+
+# Analysis with only bound CBS
+In our CBS-Sox2P hopping experiments, the CBS sites are roughly 2kb from the TSS away. The analysis above shows that there is most bias around 211 bp upstream of the TSS and at 2kb upstream of the TSS there is more opposite than same actually. 
+Therefore i want to repeat the analysis with only the bound CBS in mESCs, using our own ChIP-seq data. 
+
+### Window-size sweep + stacked fractions
+```{r fractions upstream downstream - bound CBS}
+window_grid <- c(seq(100, 900, 100), seq(1000, 5000, 500), seq(7500, 10000, 2500))
+
+res_all <- map_df(window_grid, function(w) {
+  tmp <- classify_ctcf_by_orientation(TSSs_unique, CTCF_mm10_ChIP, window_size = w)
+  total_tss <- length(TSSs_unique)
+  tmp %>% count(region, class, name = "n_TSS") %>%
+    mutate(windowsize = w, frac = n_TSS / total_tss)
+})
+
+res_all <- res_all %>%
+  mutate(
+    region = factor(region, levels = c("upstream","downstream")),
+    class  = factor(class,  levels = c("all_same","mixed","all_opposite","none"))
+  )
+
+p_frac <- ggplot(res_all, aes(x = factor(windowsize), y = frac, fill = class)) +
+  geom_col(position = "fill") +
+  facet_wrap(~ region, ncol = 1) +
+  labs(x = "Window size (bp)", y = "Fraction of TSS (sum=1 per window/side)", fill = "Class") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+p_frac
+#ggsave(file.path(output_dir, "ctcf_unanimity_fractions_by_window.pdf"), p_frac, width = 12, height = 6)
+
+res_all %>% filter(class != "none") %>%
+ ggplot(aes(x = factor(windowsize), y = frac, fill = class)) +
+  geom_col(position = "fill") +
+  facet_wrap(~ region, ncol = 1) +
+  geom_hline(yintercept = 0.5, col = "black", linetype = "dotted") +
+  labs(x = "Window size (bp)", y = "Fraction of TSS (sum=1 per window/side)", fill = "Class") +
+  theme_bw(base_size = 12) +
+  theme(axis.text.x = element_text(angle = 90, vjust = 0.5))
+
+#Different way of plotting
+res_counts <- res_all %>%
+  mutate(
+    region = factor(region, levels = c("upstream","downstream")),
+    class  = factor(class,  levels = c("all_same","mixed","all_opposite","none"))
+  )
+
+
+# label a subset of x ticks for readability (every 1000 bp + the max)
+label_df <- res_counts %>%
+  filter(windowsize %% 500 == 0 | windowsize == max(windowsize)) #filtering for everything that is 1000/x = 0 (multiple of 1000s)
+
+res_counts %>% 
+ggplot(aes(x = windowsize, y = n_TSS, color = class)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df,
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "CTCF orientation class") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+
+
+res_counts %>% filter(class != "none") %>%
+ggplot(aes(x = windowsize, y = n_TSS, color = class)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df %>% filter(class != "none"),
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "Region") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+
+
+res_counts %>% filter(class != "none" & windowsize <= 2500) %>%
+ggplot(aes(x = windowsize, y = n_TSS, color = class)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df %>% filter(class != "none" & windowsize <= 2500),
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "Region") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+
+
+res_counts %>% filter(class != "none" & windowsize <= 2500) %>%
+ggplot(aes(x = windowsize, y = n_TSS, color = class, linetype = region)) +
+  geom_line(linewidth = 0.8) +
+  geom_point(size = 1.8) +
+  geom_text(
+    data = label_df %>% filter(class != "none" & windowsize <= 2500),
+    aes(label = n_TSS),
+    vjust = -0.6, size = 3, show.legend = FALSE
+  ) +
+  #facet_grid(region ~ ., scales = "free_y") +
+  scale_x_continuous(breaks = sort(unique(res_counts$windowsize))) +
+  labs(x = "Window size (bp)", y = "Number of TSSs", color = "CTCF orientation class") +
+  theme_bw(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    axis.text.x = element_text(angle = 90, vjust = 0.5)
+  ) +
+  theme(legend.position = "bottom")
+```
+
+
+### Metaplots (expressed TSSs ↔ CTCF distances)
+Here i am using the CBS from our CTCF-ChIP seq data
+
+```{r metaplot expressed TSS - CTCF distance TSS perspective - bound CBS}
+
+######### orientation specific ###########
+# TSS-centered (±10 kb) with proper same/opposite classes
+meta_window <- 15000
+TSS_meta_regions <- resize(TSSs_unique, width = 2*meta_window + 1, fix = "center")
+
+# make the TSS windows unstranded for overlap purposes
+TSS_meta_unstr <- TSS_meta_regions
+strand(TSS_meta_unstr) <- "*"
+
+midpoint <- function(gr) (start(gr) + end(gr)) %/% 2L
+
+# include all CTCFs near TSS windows regardless of strand
+CTCF_near_TSS <- subsetByOverlaps(CTCF_mm10_ChIP, TSS_meta_unstr, ignore.strand = TRUE)
+
+# find overlaps without strand constraint
+ov1 <- findOverlaps(CTCF_near_TSS, TSS_meta_unstr, ignore.strand = TRUE)
+
+rel_pos_df_TSS <- tibble(
+  ctcf_ix     = queryHits(ov1),
+  tss_ix      = subjectHits(ov1),
+  ctcf_pos    = midpoint(CTCF_near_TSS)[ctcf_ix],
+  tss_pos     = start(TSSs_unique)[tss_ix],
+  ctcf_strand = as.character(strand(CTCF_near_TSS))[ctcf_ix],
+  tss_strand  = as.character(strand(TSSs_unique))[tss_ix]
+) %>%
+  # (optional) drop unknown CTCF strands
+  filter(ctcf_strand %in% c("+","-")) %>%
+  mutate(
+    # distance from TSS perspective: <0 upstream, >0 downstream
+    rel_pos = if_else(tss_strand == "+", ctcf_pos - tss_pos, tss_pos - ctcf_pos),
+    orientation_match = if_else(ctcf_strand == tss_strand, "same", "opposite")
+  )
+
+ggplot(rel_pos_df_TSS, aes(x = rel_pos, color = orientation_match)) +
+  geom_density(adjust = 1, bw = 250) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(x = "Distance from TSS (bp)", y = "Density of CTCF sites", color = "Orientation") +
+  theme_classic(base_size = 14)
+
+```
+
+```{r}
+rel_pos_df_TSS %>%
+  mutate(bin = floor(rel_pos / 250) * 250) %>%
+  count(bin, orientation_match) %>%
+  ggplot(aes(x = bin, y = n, color = orientation_match)) +
+  geom_line() +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  labs(
+    x = "Distance from TSS (bp)",
+    y = "Number of CTCF-TSS pairs",
+    color = "CTCF orientation relative to TSS"
+  ) +
+  coord_cartesian(ylim = c(0, NA), xlim = c(-1e4, 1e4)) +
+  theme_classic(base_size = 14) +
+  theme(legend.position="bottom")
+```
+
+
+### Get density stats
+```{r get density stats - bound CBS}
+rel_pos_df_TSS %>% 
+  dplyr::group_by(orientation_match) %>% 
+  dplyr::summarise(count = dplyr::n(),
+                   mean = mean(rel_pos),
+                   median = median(rel_pos))
+
+dens_df <- rel_pos_df_TSS %>% 
+  group_by(orientation_match) %>%
+  do({
+    d <- density(.$rel_pos, adjust = 1, na.rm = TRUE)
+    tibble(rel_pos = d$x, density = d$y)
+  }) %>%
+  ungroup()
+
+modes <- dens_df %>%
+  group_by(orientation_match) %>%
+  slice_max(order_by = density, n = 1, with_ties = FALSE) %>%
+  rename(mode_rel_pos = rel_pos, max_density = density)
+
+modes
+
+modes %>% 
+  mutate(mode_rel_pos_kb = mode_rel_pos / 1000) %>%
+  kable()
+
+#Plot 
+ggplot(rel_pos_df_TSS, aes(x = rel_pos, color = orientation_match)) +
+  geom_density(adjust = 1, bw = 250) +
+  # lines at 0
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  # lines at density maxima per group
+  # geom_vline(
+  #   data = modes,
+  #   aes(xintercept = mode_rel_pos, color = orientation_match),
+  #   linetype = "dotted"
+  # ) +
+  labs(
+    x = "Distance from TSS (bp)",
+    y = "Density of CTCF sites",
+    color = "Orientation"
+  ) +
+  coord_cartesian(ylim = c(2e-5, NA), xlim = c(-1e4, 1e4)) +
+  theme_classic(base_size = 14)
+
+
+## with number of density written
+ggplot(rel_pos_df_TSS, aes(x = rel_pos, color = orientation_match)) +
+  geom_density(adjust = 1, bw = 250) +
+  geom_vline(xintercept = 0, linetype = "dashed") +
+  geom_vline(
+    data = modes,
+    aes(xintercept = mode_rel_pos, color = orientation_match),
+    linetype = "dotted"
+  ) +
+  geom_vline(xintercept = -2000, linetype = "dashed", col = "orange") +
+  geom_text(
+    data = modes,
+    aes(x = mode_rel_pos, y = 0, 
+        label = round(mode_rel_pos)),    # label in bp
+    angle = 90, vjust = -0.5, hjust = -5,
+    show.legend = FALSE
+  ) +
+   coord_cartesian(ylim = c(2e-5, NA), xlim = c(-1e4, 1e4)) +
+  labs(
+    x = "Distance from TSS (bp)",
+    y = "Density of CTCF sites",
+    color = "Orientation"
+  ) +
+  theme_classic(base_size = 14) +
+  theme(legend.position = "bottom")
+```
+
